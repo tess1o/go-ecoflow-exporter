@@ -32,17 +32,20 @@ func main() {
 	interval := getIntOrDefault("PROMETHEUS_INTERVAL", defaultInterval)
 
 	// configure prometheus scrap interval and metric prefix
-	config := ecoflow.PrometheusConfig{
+	config := PrometheusConfig{
 		Interval: time.Second * time.Duration(interval),
 		Prefix:   metricPrefix,
 	}
 
-	client.RecordPrometheusMetrics(&config)
+	RecordPrometheusMetrics(client, &config)
 
 	// start server with metrics
 	slog.Info("Starting server on port 2112. Metrics are available at http://localhost:2112/metrics")
 	http.Handle("/metrics", promhttp.Handler())
-	http.ListenAndServe(":2112", nil)
+	err := http.ListenAndServe(":2112", nil)
+	if err != nil {
+		slog.Error("Unable to start the server", "error", err)
+	}
 }
 
 func setLoggerLevel() {

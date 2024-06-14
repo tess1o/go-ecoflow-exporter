@@ -4,7 +4,7 @@ go 1.22
 
 require (
 	github.com/prometheus/client_golang v1.19.1
-	github.com/tess1o/go-ecoflow v0.0.0-20240613201311-d00152d1ead3
+	github.com/tess1o/go-ecoflow v0.0.0-20240614090958-4776b1e92a77
 )
 
 require (
