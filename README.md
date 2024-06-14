@@ -8,6 +8,10 @@ API. More details about the API are on their website: https://developer-eu.ecofl
 
 Other known to me projects use MQTT protocol to scrap the metrics, this implementation uses Rest API.
 
+## Grafana dashboard:
+It's slightly update version of Grafana Dashboard with ID = `17812`. I've added USB output and Car Plug output metrics.
+![Grafana Dashboard](images/grafana.png)
+
 ## How to get Access Token and Secret Token
 
 1. Go to https://developer-eu.ecoflow.com/
@@ -35,14 +39,12 @@ Other known to me projects use MQTT protocol to scrap the metrics, this implemen
     - `GRAFANA_PASSWORD` - admin password in Grafana. Can be changed later in Grafana UI
 4. Save `.env` file with your changes.
 5. Start all containers: `docker-compose -f compose.yaml up -d`
-
-  ```
-CONTAINER ID   IMAGE                                COMMAND                  CREATED          STATUS         PORTS                                         NAMES
-93c9cf317861   docker-compose-go_ecoflow_exporter   "/app/ecoflow-export…"   6 seconds ago    Up 5 seconds   0.0.0.0:2112->2112/tcp, :::2112->2112/tcp     go_ecoflow_exporter
-fea150b4ef5d   grafana/grafana                      "/run.sh"                16 minutes ago   Up 5 seconds   0.0.0.0:3000->3000/tcp, :::3000->3000/tcp     grafana
-823c6adfad90   prom/prometheus                      "/bin/prometheus --c…"   16 minutes ago   Up 5 seconds   0.0.0.0:9090->9090/tcp, :::9090->9090/tcp     prometheus
-```
-
+     ```
+   CONTAINER ID   IMAGE                                COMMAND                  CREATED          STATUS         PORTS                                         NAMES
+   93c9cf317861   docker-compose-go_ecoflow_exporter   "/app/ecoflow-export…"   6 seconds ago    Up 5 seconds   0.0.0.0:2112->2112/tcp, :::2112->2112/tcp     go_ecoflow_exporter
+   fea150b4ef5d   grafana/grafana                      "/run.sh"                16 minutes ago   Up 5 seconds   0.0.0.0:3000->3000/tcp, :::3000->3000/tcp     grafana
+   823c6adfad90   prom/prometheus                      "/bin/prometheus --c…"   16 minutes ago   Up 5 seconds   0.0.0.0:9090->9090/tcp, :::9090->9090/tcp     prometheus
+   ```
 6. The services are available here:
     - http://localhost:2112/metrics - the exporter
     - http://localhost:9090 - Prometheus
