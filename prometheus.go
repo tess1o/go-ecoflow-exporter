@@ -42,8 +42,9 @@ func RecordPrometheusMetrics(c *ecoflow.Client, config *PrometheusConfig) {
 	ticker := time.NewTicker(config.Interval)
 	var metrics = make(map[string]prometheus.Gauge)
 	go func() {
-		for n := time.Now(); ; _ = <-ticker.C {
-			slog.Info("Getting ecoflow parameters.", "time", n)
+		now := time.Now()
+		for _ = time.Now(); ; now = <-ticker.C {
+			slog.Info("Getting ecoflow parameters.", "time", now)
 			devices, err := c.GetDeviceList(context.Background())
 			if err != nil {
 				slog.Error("Cannot get devices list", "error", err)

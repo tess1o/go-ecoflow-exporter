@@ -33,8 +33,8 @@ services:
       - 2112:2112
     restart: unless-stopped
     environment:
-      ACCESS_KEY: ${ACCESS_KEY}
-      SECRET_KEY: ${SECRET_KEY}
+      ECOFLOW_ACCESS_KEY: ${ECOFLOW_ACCESS_KEY}
+      ECOFLOW_SECRET_KEY: ${ECOFLOW_SECRET_KEY}
       METRIC_PREFIX: ${METRIC_PREFIX}
       PROMETHEUS_INTERVAL: ${PROMETHEUS_INTERVAL}
 

@@ -22,7 +22,7 @@ func main() {
 	secretKey := os.Getenv("ECOFLOW_SECRET_KEY")
 
 	if accessKey == "" || secretKey == "" {
-		slog.Error("AccessKey and SecretKey are mandatory")
+		slog.Error("ECOFLOW_ACCESS_KEY and ECOFLOW_SECRET_KEY are mandatory")
 		return
 	}
 
