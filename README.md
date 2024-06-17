@@ -88,9 +88,3 @@ Some difference between this project and https://github.com/berezhinskiy/ecoflow
 3. The image size (not compressed!) of this exporter is only 21MB, `ghcr.io/berezhinskiy/ecoflow_exporter` is 142 MB
 4. This implementation is extremely lightweight and barely consumes any RAM & CPU (it needs less than 10MB of RAM to
    scrap metrics from 2 devices)
-
-
-
-# TODO
-- Github workflow to automatically push new image on commit
-- Add arm64 docker image
