@@ -52,7 +52,7 @@ func RecordPrometheusMetrics(c *ecoflow.Client, config *PrometheusConfig) {
 			}
 
 			for _, dev := range devices.Devices {
-				rawParameters, pErr := c.GetDeviceQuoteRawParameters(context.Background(), dev.SN)
+				rawParameters, pErr := c.GetDeviceAllParameters(context.Background(), dev.SN)
 				if pErr != nil {
 					slog.Error("Cannot get device quota", "SN", dev.SN, "error", pErr)
 					continue
