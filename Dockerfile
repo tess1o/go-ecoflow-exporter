@@ -10,6 +10,7 @@ RUN go mod download
 
 # Copy the source code
 COPY *.go ./
+COPY timescaledb/*.go timescaledb/
 
 # Build the Go application
 RUN CGO_ENABLED=0 GOOS=linux go build -o ecoflow-exporter .

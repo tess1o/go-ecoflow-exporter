@@ -1,16 +1,14 @@
 services:
-  prometheus:
-    image: prom/prometheus
-    container_name: prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
+  timescaledb:
+    image: timescale/timescaledb-ha:pg16
+    container_name: timescaledb
+    environment:
+      POSTGRES_USERNAME: "${TIMESCALE_USERNAME}"
+      POSTGRES_PASSWORD: "${TIMESCALE_PASSWORD}"
     ports:
-      - 9090:9090
-    restart: unless-stopped
+      - "5432:5432"
     volumes:
-      - ./prometheus:/etc/prometheus
-      - prometheus_data:/prometheus
-
+      - timescale_data:/var/lib/postgresql/data
   grafana:
     image: grafana/grafana
     container_name: grafana
@@ -25,7 +23,9 @@ services:
       - grafana_data:/var/lib/grafana
 
   go_ecoflow_exporter:
-    image: tess1o/go-ecoflow-exporter:latest
+    build:
+      context: ./..
+      dockerfile: ./Dockerfile
     container_name: go_ecoflow_exporter
     ports:
       - 2112:2112
@@ -34,8 +34,9 @@ services:
       ECOFLOW_ACCESS_KEY: ${ECOFLOW_ACCESS_KEY}
       ECOFLOW_SECRET_KEY: ${ECOFLOW_SECRET_KEY}
       METRIC_PREFIX: ${METRIC_PREFIX}
-      SCRAPING_INTERVAL: ${SCRAPING_INTERVAL}
+      PROMETHEUS_INTERVAL: ${PROMETHEUS_INTERVAL}
+      TIMESCALE_URL: ${TIMESCALE_URL}
 
 volumes:
-  prometheus_data:
+  timescale_data:
   grafana_data:

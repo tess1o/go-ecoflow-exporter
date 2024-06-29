@@ -10,7 +10,7 @@ Other known to me projects use MQTT protocol to scrap the metrics, this implemen
 
 ## Grafana dashboard:
 It's slightly update version of Grafana Dashboard with ID = `17812`. I've added USB output and Car Plug output metrics.
-![Grafana Dashboard](images/grafana.png)
+![Grafana Dashboard](docs/images/grafana.png)
 
 ## How to get Access Token and Secret Token
 
