@@ -1,4 +1,4 @@
-module go-ecoflow-usage
+module go-ecoflow-exporter
 
 go 1.22
 

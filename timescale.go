@@ -10,7 +10,6 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/tess1o/go-ecoflow"
-	timescaledb "go-ecoflow-usage/timescaledb/sqlc"
 	"log"
 	"log/slog"
 	"net/url"
@@ -35,7 +34,7 @@ type TimescaleExporter struct {
 
 func NewTimescaleExporter(config *TimescaleExporterConfig) *TimescaleExporter {
 	runDBMigration(config)
-	slog.Info("Creating connection pool to timescaledb")
+	slog.Info("Creating timescale exporter")
 	dbUrl, err := convertURLToConnString(config.TimescaleUrl)
 	if err != nil {
 		log.Fatalf("cannot get db url from string: "+config.TimescaleUrl+". error:%+v\n", err)
@@ -84,7 +83,7 @@ func runDBMigration(config *TimescaleExporterConfig) {
 		log.Fatalf("failed to run migrate up: %+v\n", err)
 	}
 
-	slog.Debug("db migrated successfully")
+	slog.Info("DB migrated successfully")
 }
 
 func (t *TimescaleExporter) Handle(ctx context.Context, device ecoflow.DeviceInfo, rawParameters map[string]interface{}) {
@@ -134,20 +133,28 @@ func (t *TimescaleExporter) handleTimeScaleMetrics(ctx context.Context, metrics 
 		return
 	}
 	defer conn.Release()
-	queries := timescaledb.New(conn)
-	timescaleMetrics, err := json.Marshal(dbMetrics)
-	if err != nil {
-		return
-	}
-	_, err = queries.InsertMetric(ctx, timescaledb.InsertMetricParams{
-		SerialNumber: dev.SN,
-		Metrics:      timescaleMetrics,
-	})
+
+	err = insertMetric(ctx, conn, dev.SN, dbMetrics)
+
 	if err != nil {
 		slog.Error("Unable to insert metric", "db_error", err)
 	} else {
 		slog.Debug("Inserted metrics", "device", dev.SN)
 	}
+}
+
+const insertMetricQuery = `
+INSERT INTO ecoflow_metrics (serial_number, metrics)
+VALUES ($1, $2)
+`
+
+func insertMetric(ctx context.Context, conn *pgxpool.Conn, sn string, dbMetrics map[string]interface{}) error {
+	timescaleMetrics, err := json.Marshal(dbMetrics)
+	if err != nil {
+		return err
+	}
+	_, err = conn.Exec(ctx, insertMetricQuery, sn, timescaleMetrics)
+	return err
 }
 
 func (t *TimescaleExporter) Close(_ context.Context) {

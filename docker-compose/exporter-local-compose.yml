@@ -1,0 +1,16 @@
+services:
+  go_ecoflow_exporter:
+    build:
+      context: ./..
+      dockerfile: ./Dockerfile
+    container_name: go_ecoflow_exporter
+    ports:
+      - 2112:2112
+    restart: unless-stopped
+    environment:
+      ECOFLOW_ACCESS_KEY: ${ECOFLOW_ACCESS_KEY}
+      ECOFLOW_SECRET_KEY: ${ECOFLOW_SECRET_KEY}
+      PROMETHEUS_ENABLED: ${PROMETHEUS_ENABLED}
+      METRIC_PREFIX: ${METRIC_PREFIX}
+      TIMESCALE_ENABLED: ${TIMESCALE_ENABLED}
+      TIMESCALE_URL: ${TIMESCALE_URL}

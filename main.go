@@ -19,7 +19,7 @@ const (
 )
 
 const (
-	timescaleDbSource = "file://timescaledb/migration"
+	timescaleDbSource = "file://migrations/timescale"
 )
 
 type Shutdownable interface {
@@ -44,6 +44,11 @@ func main() {
 
 	handlers = enablePrometheus(metricPrefix, handlers)
 	handlers = enableTimescaleDb(metricPrefix, handlers)
+
+	if len(handlers) == 0 {
+		slog.Error("No metric handlers enabled, exiting")
+		os.Exit(1)
+	}
 
 	done := make(chan bool, 1)
 
