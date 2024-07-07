@@ -28,4 +28,6 @@ jobs:
         with:
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: tess1o/go-ecoflow-exporter:latest
+          tags: |
+            tess1o/go-ecoflow-exporter:latest
+            tess1o/go-ecoflow-exporter:${{ github.ref_name }}
