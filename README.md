@@ -7,6 +7,7 @@ are:
 
 1. Prometheus
 2. TimescaleDB
+3. Redis (planned, not implemented yet)
 
 Depending on your configuration you can export the metrics to one of those systems or to all at once.
 
