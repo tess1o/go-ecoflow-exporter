@@ -1,0 +1,12 @@
+services:
+  go_ecoflow_exporter:
+    image: tess1o/go-ecoflow-exporter:latest
+    container_name: go_ecoflow_exporter
+    ports:
+      - 2112:2112
+    restart: unless-stopped
+    environment:
+      ECOFLOW_ACCESS_KEY: ${ECOFLOW_ACCESS_KEY}
+      ECOFLOW_SECRET_KEY: ${ECOFLOW_SECRET_KEY}
+      METRIC_PREFIX: ${METRIC_PREFIX}
+      SCRAPING_INTERVAL: ${SCRAPING_INTERVAL}
