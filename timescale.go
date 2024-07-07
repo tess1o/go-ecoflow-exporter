@@ -17,7 +17,7 @@ import (
 	"strings"
 )
 
-// check that PrometheusExporter implements MetricHandler
+// check that TimescaleExporter implements MetricHandler
 var _ MetricHandler = (*TimescaleExporter)(nil)
 var _ Shutdownable = (*TimescaleExporter)(nil)
 

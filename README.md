@@ -7,7 +7,7 @@ are:
 
 1. Prometheus
 2. TimescaleDB
-3. Redis (planned, not implemented yet)
+3. Redis
 
 Depending on your configuration you can export the metrics to one of those systems or to all at once.
 
@@ -26,16 +26,17 @@ Other known to me projects use MQTT protocol to scrap the metrics, this implemen
 6. Go to https://developer-eu.ecoflow.com/us/security and create new AccessKey and SecretKey
 
 ## How to run the Prometheus, Exporter and Grafana using docker-compose
-
 See documentation here: [Prometheus](docs/prometheus.md)
 
 ## How to run the TimescaleDB, Exporter and Grafana using docker-compose
 See documentation here: [TimescaleDB](docs/timescaledb.md)
-
 TimescaleDB allows to build more complex logic if you want so. For instance, you can calculate how long you had power
 outages and how long the grid power was on. Since all metrics are stored in a PostgreSQL database (TimescaleDB to be
 precise), you have the power of SQL to build any kind of metrics or reports you want. Prometheus doesn't provide such
 flexibility.
+
+## How to run the Redis, Exporter and Grafana using docker-compose
+See documentation here: [Redis](docs/redis.md)
 
 ## Compare to other exporters
 

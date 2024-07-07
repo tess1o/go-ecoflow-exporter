@@ -22,7 +22,7 @@ You can find usage examples below in this document.
 
 There is no cleanup procedure implemented at the moment, so you might want to cleanup all records by yourself.
 
-## How to run the Exporter, TimescaleDB and Grafana using docker-compose
+## How to run the TimescaleDB, Exporter and Grafana using docker-compose
 
 1. Go to docker-compose folder: `cd docker-compose`
 2. Update `.env` file with two mandatory parameters:
@@ -40,8 +40,9 @@ There is no cleanup procedure implemented at the moment, so you might want to cl
     - `SCRAPING_INTERVAL` - scrapping interval in seconds. How often should the exporter execute requests to Ecoflow
       Rest API in order to get the data. Default value is 30 seconds.
     - `DEBUG_ENABLED` - enable debug log messages. Default value is "false". To enable use values `true` or `1`
-    - `GRAFANA_USERNAME` - admin username in Grafana. Can be changed later in Grafana UI
-    - `GRAFANA_PASSWORD` - admin password in Grafana. Can be changed later in Grafana UI
+    - `GRAFANA_USERNAME` - admin username in Grafana. Default value: `grafana`. Can be changed later in Grafana UI
+    - `GRAFANA_PASSWORD` - admin password in Grafana. Default value: `grafana`. Can be changed later in Grafana UI
+
 4. Save `.env` file with your changes.
 5. Start timescaledb container: `docker-compose -f docker-compose/timescale-compose.yml up -d`
 6. Start the exporter and

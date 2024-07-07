@@ -34,9 +34,10 @@ start-prometheus:
 start-timescale:
 	docker-compose -f docker-compose/timescale-compose.yml up -d
 
+start-redis:
+	docker-compose -f docker-compose/redis-compose.yml up -d
+
 start-exporter-local:
-	docker stop go_ecoflow_exporter
-	docker rm go_ecoflow_exporter
 	docker-compose -f docker-compose/exporter-local-compose.yml up --build --force-recreate --no-deps -d
 
 start-exporter-remote:
@@ -50,4 +51,4 @@ stop-exporter:
 exporter-logs:
 	docker logs -f go_ecoflow_exporter
 
-.PHONY: build push build-push migrateup migrateup1 migratedown migratedown1 new_migration start-grafana start-prometheus start-timescale start-exporter-local start-exporter-remote stop-all
+.PHONY: build push build-push migrateup migrateup1 migratedown migratedown1 new_migration start-grafana start-prometheus start-timescale start-redis start-exporter-local start-exporter-remote stop-all

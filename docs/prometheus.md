@@ -1,4 +1,4 @@
-## How to run the Exporter, Prometheus and Grafana using docker-compose
+## How to run the Prometheus, Exporter and Grafana using docker-compose
 
 1. Go to docker-compose folder: `cd docker-compose`
 2. Update `.env` file with two mandatory parameters:
@@ -13,8 +13,8 @@
       Rest API in order to get the data. Default value is 30 seconds. Align this value
       with `docker-compose/prometheus/prometheus.yml`
     - `DEBUG_ENABLED` - enable debug log messages. Default value is "false". To enable use values `true` or `1`
-    - `GRAFANA_USERNAME` - admin username in Grafana. Can be changed later in Grafana UI
-    - `GRAFANA_PASSWORD` - admin password in Grafana. Can be changed later in Grafana UI
+    - `GRAFANA_USERNAME` - admin username in Grafana. Default value: `grafana`. Can be changed later in Grafana UI
+    - `GRAFANA_PASSWORD` - admin password in Grafana. Default value: `grafana`. Can be changed later in Grafana UI
 4. Save `.env` file with your changes.
 5. Start all containers: `docker-compose -f docker-compose/grafana-compose.yml -f docker-compose/exporter-remote-compose.yml up -f docker-compose/prometheus-compose.yml up -d`
      ```
