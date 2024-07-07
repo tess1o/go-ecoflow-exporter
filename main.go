@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"github.com/go-redis/redis/v8"
 	"github.com/tess1o/go-ecoflow"
 	"log"
 	"log/slog"
@@ -12,14 +13,26 @@ import (
 	"time"
 )
 
+// generic
 const (
 	defaultMetricPrefix = "ecoflow"
 	defaultInterval     = 30
-	defaultMetricsPort  = "2112"
 )
 
+// prometheus
+const (
+	defaultMetricsPort = "2112"
+)
+
+// timescaledb
 const (
 	timescaleDbSource = "file://migrations/timescale"
+)
+
+// redis
+const (
+	defaultRedisUrl = "localhost:6379"
+	defaultRedisDb  = 0
 )
 
 type Shutdownable interface {
@@ -44,6 +57,7 @@ func main() {
 
 	handlers = enablePrometheus(metricPrefix, handlers)
 	handlers = enableTimescaleDb(metricPrefix, handlers)
+	handlers = enableRedis(metricPrefix, handlers)
 
 	if len(handlers) == 0 {
 		slog.Error("No metric handlers enabled, exiting")
@@ -77,6 +91,32 @@ func enableTimescaleDb(metricPrefix string, handlers []MetricHandler) []MetricHa
 
 		handlers = append(handlers, timescaleExporter)
 	}
+	return handlers
+}
+
+func enableRedis(prefix string, handlers []MetricHandler) []MetricHandler {
+	if isOptionEnabled("REDIS_ENABLED") {
+		config := &redis.Options{
+			Addr: getStringOrDefault("REDIS_URL", defaultRedisUrl),
+			DB:   getIntOrDefault("REDIS_DB", defaultRedisDb),
+		}
+
+		redisUser, exists := os.LookupEnv("REDIS_USER")
+		if exists {
+			config.Username = redisUser
+		}
+		redisPassword, exists := os.LookupEnv("REDIS_PASSWORD")
+		if exists {
+			config.Password = redisPassword
+		}
+
+		redisExporter := NewRedisExporter(&RedisExporterConfig{
+			Prefix:      prefix,
+			RedisConfig: config,
+		})
+		handlers = append(handlers, redisExporter)
+	}
+
 	return handlers
 }
 
