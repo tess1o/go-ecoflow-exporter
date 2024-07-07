@@ -29,11 +29,12 @@ Other known to me projects use MQTT protocol to scrap the metrics, this implemen
 See documentation here: [Prometheus](docs/prometheus.md)
 
 ## How to run the TimescaleDB, Exporter and Grafana using docker-compose
+See documentation here: [TimescaleDB](docs/timescaledb.md)
+
 TimescaleDB allows to build more complex logic if you want so. For instance, you can calculate how long you had power
 outages and how long the grid power was on. Since all metrics are stored in a PostgreSQL database (TimescaleDB to be
 precise), you have the power of SQL to build any kind of metrics or reports you want. Prometheus doesn't provide such
-flexibility
-See documentation here: [TimescaleDB](docs/timescaledb.md)
+flexibility.
 
 ## Compare to other exporters
 
