@@ -10,6 +10,10 @@ ts:R123YHY5ABCE1346:ecoflow_bms_bms_status_cycles
 ts:R123YHY5ABCE1346:ecoflow_bms_bms_status_soc
 ```
 
+Additionally, there is a key/value to store device SN and last access date:
+`device:last_access:%device_serial_number%`
+This can be useful when declaring variables in Grafana to fetch all devices you have
+
 ## How to run the Redis, Exporter and Grafana using docker-compose
 
 1. Go to docker-compose folder: `cd docker-compose`
