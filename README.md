@@ -14,7 +14,7 @@ Depending on your configuration you can export the metrics to one of those syste
 This project uses library https://github.com/tess1o/go-ecoflow to fetch the metrics from your Ecoflow devices via
 Ecoflow Rest API. More details about the API are on their website: https://developer-eu.ecoflow.com/
 
-Other known to me projects use MQTT protocol to scrap the metrics, this implementation uses Rest API.
+Other known to me projects use MQTT protocol to fetch the metrics, this implementation uses Rest API.
 
 ## How to get Access Token and Secret Token
 
@@ -57,4 +57,4 @@ Some difference between this project and https://github.com/berezhinskiy/ecoflow
    exporter
 3. The image size (not compressed!) of this exporter is only 21MB, `ghcr.io/berezhinskiy/ecoflow_exporter` is 142 MB
 4. This implementation is extremely lightweight and barely consumes any RAM & CPU (it needs less than 10MB of RAM to
-   scrap metrics from 2 devices)
+   fetch metrics from 2 devices)
