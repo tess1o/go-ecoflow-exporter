@@ -41,5 +41,21 @@ This can be useful when declaring variables in Grafana to fetch all devices you 
 8. The services are available here:
     - http://localhost:3000 - Grafana
     - Redis is available at the value of `REDIS_URL` variable
-9. Configure a new Redis datasource in Grafana according to example below:
-10. Create your dashboard (TODO: add example of a dashboard)
+9. Install Redis plugin: Navigate to http://localhost:3000/plugins/redis-datasource and click on `Install` button
+![img.png](images/redis_plugin.png)
+10. Create Redis datasource: Navigate to http://localhost:3000/connections/datasources/new and search for `Redis`.
+![img.png](images/redis_datasource.png)
+11. Create your dashboard.
+
+### Grafana dashboard tips
+
+- I suggest to add new Variable "Device" to get the dropdown list of devices. Example:
+![img_1.png](images/redis_add_variable.png)
+
+- If you have Prometheus query defined like `ecoflow_bms_bms_status_cycles{device="$device"}` you can implement the same using Redis:
+    - *Datasource*: Redis
+    - *Type*: RedisTimeSeries
+    - *Command*: TS.GET
+    - *Key*: ts:$device:ecoflow_bms_bms_status_cycles
+
+![img.png](images/redis_dashboard_example.png)
