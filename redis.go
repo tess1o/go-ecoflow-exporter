@@ -24,7 +24,7 @@ type RedisExporter struct {
 }
 
 func NewRedisExporter(config *RedisExporterConfig) *RedisExporter {
-	slog.Info("Creating redis exporter")
+	slog.Info("Creating redis exporter...")
 
 	client := redis.NewClient(config.RedisConfig)
 
@@ -77,10 +77,10 @@ func (r *RedisExporter) handleTimeScaleMetrics(ctx context.Context, metrics map[
 		}
 	}
 
-  // adding device and last
+	// adding device and last
 	key := fmt.Sprintf("device:last_access:%s", dev.SN)
 	pipe.Set(ctx, key, timestamp, 0)
-  
+
 	_, err := pipe.Exec(ctx)
 
 	if err != nil {

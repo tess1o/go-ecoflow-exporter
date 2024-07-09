@@ -42,6 +42,8 @@ type Shutdownable interface {
 func main() {
 	setLoggerLevel()
 
+	slog.Info("Starting the exporter...")
+
 	accessKey := os.Getenv("ECOFLOW_ACCESS_KEY")
 	secretKey := os.Getenv("ECOFLOW_SECRET_KEY")
 
@@ -60,7 +62,8 @@ func main() {
 	handlers = enableRedis(metricPrefix, handlers)
 
 	if len(handlers) == 0 {
-		slog.Error("No metric handlers enabled, exiting")
+		slog.Error("No metric handlers enabled. Make sure at least one metric handle is enabled: " +
+			"PROMETHEUS_ENABLED=true or TIMESCALE_ENABLED=true or REDIS_ENABLED=true")
 		os.Exit(1)
 	}
 

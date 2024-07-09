@@ -26,22 +26,22 @@ push:
 build-push: build push
 
 start-grafana:
-	docker-compose -f docker-compose/grafana-compose.yml up -d
+	docker compose -f docker-compose/grafana-compose.yml up -d
 
 start-prometheus:
-	docker-compose -f docker-compose/prometheus-compose.yml up -d
+	docker compose -f docker-compose/prometheus-compose.yml up -d
 
 start-timescale:
-	docker-compose -f docker-compose/timescale-compose.yml up -d
+	docker compose -f docker-compose/timescale-compose.yml up -d
 
 start-redis:
-	docker-compose -f docker-compose/redis-compose.yml up -d
+	docker compose -f docker-compose/redis-compose.yml up -d
 
 start-exporter-local:
-	docker-compose -f docker-compose/exporter-local-compose.yml up --build --force-recreate --no-deps -d
+	docker compose -f docker-compose/exporter-local-compose.yml up --build --force-recreate --no-deps -d
 
 start-exporter-remote:
-	docker-compose -f docker-compose/exporter-remote-compose.yml up
+	docker compose -f docker-compose/exporter-remote-compose.yml up
 
 stop-exporter:
 	docker stop go_ecoflow_exporter

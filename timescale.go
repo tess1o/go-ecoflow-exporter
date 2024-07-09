@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 )
 
 // check that TimescaleExporter implements MetricHandler
@@ -33,8 +34,8 @@ type TimescaleExporter struct {
 }
 
 func NewTimescaleExporter(config *TimescaleExporterConfig) *TimescaleExporter {
-	runDBMigration(config)
 	slog.Info("Creating timescale exporter")
+	runDBMigration(config)
 	dbUrl, err := convertURLToConnString(config.TimescaleUrl)
 	if err != nil {
 		log.Fatalf("cannot get db url from string: "+config.TimescaleUrl+". error:%+v\n", err)
@@ -74,13 +75,36 @@ func convertURLToConnString(pgURL string) (string, error) {
 }
 
 func runDBMigration(config *TimescaleExporterConfig) {
-	migration, err := migrate.New(config.MigrationSourceUrl, config.TimescaleUrl)
+	// for now hardcoding these constants.
+	const maxRetries = 5
+	const retryInterval = 10 * time.Second
+
+	var migration *migrate.Migrate
+	var err error
+
+	for i := 0; i < maxRetries; i++ {
+		migration, err = migrate.New(config.MigrationSourceUrl, config.TimescaleUrl)
+		if err == nil {
+			break
+		}
+		slog.Error("cannot create new migrate instance", "error", err)
+		time.Sleep(retryInterval)
+	}
 	if err != nil {
-		log.Fatalf("cannot create new migrate instance: %+v", err)
+		slog.Error("failed to create migrate instance after retries", "error", err)
+		os.Exit(1)
 	}
 
-	if err = migration.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-		log.Fatalf("failed to run migrate up: %+v\n", err)
+	for i := 0; i < maxRetries; i++ {
+		err = migration.Up()
+		if err == nil || errors.Is(err, migrate.ErrNoChange) {
+			break
+		}
+		slog.Error("failed to run migrate up, retrying...", "error", err, "attempt", i+1)
+		time.Sleep(retryInterval)
+	}
+	if err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		slog.Error("failed to run migrate up after retries", "error", err)
 	}
 
 	slog.Info("DB migrated successfully")
