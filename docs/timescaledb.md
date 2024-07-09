@@ -44,7 +44,10 @@ There is no cleanup procedure implemented at the moment, so you might want to cl
     - `GRAFANA_PASSWORD` - admin password in Grafana. Default value: `grafana`. Can be changed later in Grafana UI
 
 4. Save `.env` file with your changes.
-5. Start timescaledb container: `docker-compose -f docker-compose/timescale-compose.yml up -d`
+5. Start timescaledb container: `docker-compose -f docker-compose/timescale-compose.yml up -d`.\
+   :exclamation: *NOTE*: The exporter does not wait until the TimescaleDB is UP, because TimescaleDB is an optional dependency for the
+   exporter. Thus, it's important to start the DB first and then the exporter. There is a retry mechanism to wait for the DB
+   to be operational, however it's better to do not rely on it and start the DB before the exporter.
 6. Start the exporter and
    grafana: `docker-compose -f docker-compose/grafana-compose.yml -f docker-compose/exporter-remote-compose.yml up -d`
 7. The services are available here:
@@ -52,9 +55,10 @@ There is no cleanup procedure implemented at the moment, so you might want to cl
     - TimescaleDB is available at the value of `TIMESCALE_URL` variable
 8. Configure a new TimescaleDB datasource in Grafana according to example below:
    ![timescaledb-datasource.png](images/timescaledb-datasource.png)
-9. Create your dashboard (TODO: add example of a dashboard)
+9. Create your dashboard.
 
 ## Dashboard example
+
 ![img.png](images/dashboard_example.png)
 
 ## Tips how to fetch data from TimescaleDB
