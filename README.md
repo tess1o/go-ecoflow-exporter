@@ -25,6 +25,9 @@ Other known to me projects use MQTT protocol to fetch the metrics, this implemen
 5. Receive email with subject "Approval notice from EcoFlow Developer Platform". May take some time
 6. Go to https://developer-eu.ecoflow.com/us/security and create new AccessKey and SecretKey
 
+## Dashboard example
+![img.png](docs/images/dashboard_example.png)
+
 ## How to run the Prometheus, Exporter and Grafana using docker-compose
 See documentation here: [Prometheus](docs/prometheus.md)
 

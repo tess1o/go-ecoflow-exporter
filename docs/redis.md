@@ -47,6 +47,10 @@ This can be useful when declaring variables in Grafana to fetch all devices you 
 ![img.png](images/redis_datasource.png)
 11. Create your dashboard.
 
+
+## Dashboard example
+![img.png](images/dashboard_example.png)
+
 ### Grafana dashboard tips
 
 - I suggest to add new Variable "Device" to get the dropdown list of devices. Example:

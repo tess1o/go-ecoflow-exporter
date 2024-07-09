@@ -33,3 +33,7 @@
    Navigate to Dashboards → Import dashboard → import ID `17812`, select the only existing Prometheus datasource.
    (The Grafana dashboard was implemented
    in https://github.com/berezhinskiy/ecoflow_exporter/tree/master/docker-compose)
+
+## Dashboard example
+
+![img.png](images/dashboard_example.png)

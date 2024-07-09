@@ -54,6 +54,9 @@ There is no cleanup procedure implemented at the moment, so you might want to cl
    ![timescaledb-datasource.png](images/timescaledb-datasource.png)
 9. Create your dashboard (TODO: add example of a dashboard)
 
+## Dashboard example
+![img.png](images/dashboard_example.png)
+
 ## Tips how to fetch data from TimescaleDB
 
 1. To fetch one metric you can use query like this:
