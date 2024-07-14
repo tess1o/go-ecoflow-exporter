@@ -18,9 +18,19 @@ This can be useful when declaring variables in Grafana to fetch all devices you 
 
 1. Go to docker-compose folder: `cd docker-compose`
 2. Update `.env` file with two mandatory parameters:
-    - `ECOFLOW_ACCESS_KEY` - the access key from the Ecoflow development website
-    - `ECOFLOW_SECRET_KEY` - the secret key from the Ecoflow development website
-    - `REDIS_ENABLED` - enable integration with Redis
+   - `REDIS_ENABLED` - true (or 1) if you want to enable integration with Redis. Default value is false
+   - `EXPORTER_TYPE` - the type of exporter you'd like to use. Possible values: `rest` and `mqtt`. Default value
+     is `rest`.
+
+   If  `EXPORTER_TYPE=rest` is selected, then provide values for the following parameters:
+   - `ECOFLOW_ACCESS_KEY` - the access key from the Ecoflow development website
+   - `ECOFLOW_SECRET_KEY` - the secret key from the Ecoflow development website
+
+   If  `EXPORTER_TYPE=mqtt` is selected, then provide values for the following parameters:
+   - `ECOFLOW_EMAIL` - your email address that you use to log in to the Ecoflow mobile app
+   - `ECOFLOW_PASSWORD` - your ecoflow password
+   - `ECOFLOW_DEVICES` - the list of devices serial numbers separated by comma. For instance: `SN1,SN2,SN3`
+
 3. (OPTIONALLY) Update other variables if you need to:
     - `REDIS_URL` - Redis url. Default value: `localhost:6379`
     - `REDIS_DB` - Redis database. Default value: `0`

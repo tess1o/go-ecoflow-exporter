@@ -2,9 +2,19 @@
 
 1. Go to docker-compose folder: `cd docker-compose`
 2. Update `.env` file with two mandatory parameters:
-    - `ECOFLOW_ACCESS_KEY` - the access key from the Ecoflow development website
-    - `ECOFLOW_SECRET_KEY` - the secret key from the Ecoflow development website
     - `PROMETHEUS_ENABLED` - true (or 1) if you want to enable integration with Prometheus. Default value is false
+    - `EXPORTER_TYPE` - the type of exporter you'd like to use. Possible values: `rest` and `mqtt`. Default value
+      is `rest`.
+
+   If  `EXPORTER_TYPE=rest` is selected, then provide values for the following parameters:
+      - `ECOFLOW_ACCESS_KEY` - the access key from the Ecoflow development website
+      - `ECOFLOW_SECRET_KEY` - the secret key from the Ecoflow development website
+   
+   If  `EXPORTER_TYPE=mqtt` is selected, then provide values for the following parameters:
+      - `ECOFLOW_EMAIL` - your email address that you use to log in to the Ecoflow mobile app
+      - `ECOFLOW_PASSWORD` - your ecoflow password
+      - `ECOFLOW_DEVICES` - the list of devices serial numbers separated by comma. For instance: `SN1,SN2,SN3`
+
 3. (OPTIONALLY) Update other variables if you need to:
     - `METRIC_PREFIX`: the prefix that will be added to all metrics. Default value is `ecoflow`. For instance
       metric `bms_bmsStatus.minCellTemp` will be exported to prometheus as `ecoflow.bms_bmsStatus.minCellTemp`. With
@@ -16,7 +26,8 @@
     - `GRAFANA_USERNAME` - admin username in Grafana. Default value: `grafana`. Can be changed later in Grafana UI
     - `GRAFANA_PASSWORD` - admin password in Grafana. Default value: `grafana`. Can be changed later in Grafana UI
 4. Save `.env` file with your changes.
-5. Start all containers: `docker-compose -f docker-compose/grafana-compose.yml -f docker-compose/exporter-remote-compose.yml up -f docker-compose/prometheus-compose.yml up -d`
+5. Start all
+   containers: `docker-compose -f docker-compose/grafana-compose.yml -f docker-compose/exporter-remote-compose.yml up -f docker-compose/prometheus-compose.yml up -d`
      ```
    CONTAINER ID   IMAGE                                COMMAND                  CREATED          STATUS         PORTS                                         NAMES
    93c9cf317861   docker-compose-go_ecoflow_exporter   "/app/ecoflow-export…"   6 seconds ago    Up 5 seconds   0.0.0.0:2112->2112/tcp, :::2112->2112/tcp     go_ecoflow_exporter

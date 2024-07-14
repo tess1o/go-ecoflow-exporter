@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"github.com/go-redis/redis/v8"
 	"github.com/tess1o/go-ecoflow"
 	"log"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -17,11 +19,13 @@ import (
 const (
 	defaultMetricPrefix = "ecoflow"
 	defaultInterval     = 30
+	defaultExporterType = "rest"
 )
 
 // prometheus
 const (
-	defaultMetricsPort = "2112"
+	defaultMetricsPort             = "2112"
+	defaultOfflineThresholdSeconds = 30
 )
 
 // timescaledb
@@ -35,6 +39,13 @@ const (
 	defaultRedisDb  = 0
 )
 
+//errors
+
+var (
+	accessTokenMandatoryErr   = errors.New("ECOFLOW_ACCESS_KEY and ECOFLOW_SECRET_KEY are mandatory")
+	emailPasswordMandatoryErr = errors.New("ECOFLOW_EMAIL and ECOFLOW_PASSWORD and ECOFLOW_DEVICES are mandatory")
+)
+
 type Shutdownable interface {
 	Close(ctx context.Context)
 }
@@ -43,20 +54,9 @@ func main() {
 	setLoggerLevel()
 
 	slog.Info("Starting the exporter...")
-
-	accessKey := os.Getenv("ECOFLOW_ACCESS_KEY")
-	secretKey := os.Getenv("ECOFLOW_SECRET_KEY")
-
-	if accessKey == "" || secretKey == "" {
-		slog.Error("ECOFLOW_ACCESS_KEY and ECOFLOW_SECRET_KEY are mandatory")
-		return
-	}
-
-	client := ecoflow.NewEcoflowClient(accessKey, secretKey)
 	metricPrefix := getStringOrDefault("METRIC_PREFIX", defaultMetricPrefix)
 
 	var handlers []MetricHandler
-
 	handlers = enablePrometheus(metricPrefix, handlers)
 	handlers = enableTimescaleDb(metricPrefix, handlers)
 	handlers = enableRedis(metricPrefix, handlers)
@@ -71,12 +71,65 @@ func main() {
 
 	setupGracefulShutdown(handlers, done)
 
-	interval := getIntOrDefault("SCRAPING_INTERVAL", defaultInterval)
-	exporter := NewMetricsExporter(client, time.Duration(interval)*time.Second, handlers...)
-	go exporter.ExportMetrics()
+	exporterType := getStringOrDefault("EXPORTER_TYPE", defaultExporterType)
+	switch exporterType {
+	case "rest":
+		err := createAndStartRestExporter(handlers)
+		if err != nil {
+			slog.Error("Unable to start rest exporter", "error", err)
+			return
+		}
+	case "mqtt":
+		err := createAndStartMqttExporter(handlers)
+		if err != nil {
+			slog.Error("Unable to start mqtt exporter", "error", err)
+			return
+		}
+	default:
+		slog.Error("Unknown exporter type. Supported types: rest, mqtt")
+		return
+	}
 
 	<-done
 	slog.Info("Application has been stopped")
+}
+
+func createAndStartMqttExporter(handlers []MetricHandler) error {
+	email := os.Getenv("ECOFLOW_EMAIL")
+	password := os.Getenv("ECOFLOW_PASSWORD")
+	devices := os.Getenv("ECOFLOW_DEVICES")
+	if email == "" || password == "" || devices == "" {
+		return emailPasswordMandatoryErr
+	}
+
+	devicesList := strings.Split(devices, ",")
+
+	offlineThreshold := getIntOrDefault("MQTT_DEVICE_OFFLINE_THRESHOLD_SECONDS", defaultOfflineThresholdSeconds)
+
+	exporter, err := NewMqttMetricsExporter(email, password, devicesList, time.Second*time.Duration(offlineThreshold), handlers...)
+
+	if err != nil {
+		return err
+	}
+
+	go exporter.ExportMetrics()
+	return nil
+}
+
+func createAndStartRestExporter(handlers []MetricHandler) error {
+	interval := getIntOrDefault("SCRAPING_INTERVAL", defaultInterval)
+
+	accessKey := os.Getenv("ECOFLOW_ACCESS_KEY")
+	secretKey := os.Getenv("ECOFLOW_SECRET_KEY")
+
+	if accessKey == "" || secretKey == "" {
+		return accessTokenMandatoryErr
+	}
+	client := ecoflow.NewEcoflowClient(accessKey, secretKey)
+
+	exporter := NewMetricsExporter(client, time.Duration(interval)*time.Second, handlers...)
+	go exporter.ExportMetrics()
+	return nil
 }
 
 func enableTimescaleDb(metricPrefix string, handlers []MetricHandler) []MetricHandler {

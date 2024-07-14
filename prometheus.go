@@ -6,10 +6,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/tess1o/go-ecoflow"
-	"net/http"
-
 	"log/slog"
+	"net/http"
 	"strings"
+	"sync"
 )
 
 // check that PrometheusExporter implements MetricHandler
@@ -26,6 +26,7 @@ type PrometheusConfig struct {
 type PrometheusExporter struct {
 	Config  *PrometheusConfig
 	metrics map[string]prometheus.Gauge
+	mu      sync.RWMutex
 	Server  *http.Server
 }
 
@@ -51,6 +52,7 @@ func NewPrometheusExporter(config *PrometheusConfig) *PrometheusExporter {
 	return &PrometheusExporter{
 		Config:  config,
 		Server:  server,
+		mu:      sync.RWMutex{},
 		metrics: make(map[string]prometheus.Gauge),
 	}
 }
@@ -96,7 +98,9 @@ func (p *PrometheusExporter) handleOneMetric(device ecoflow.DeviceInfo, field st
 			},
 		})
 		prometheus.MustRegister(gauge)
+		p.mu.Lock()
 		p.metrics[deviceMetricName] = gauge
+		p.mu.Unlock()
 	} else {
 		slog.Debug("Updating metric", "metric", metricName, "value", val, "device", device.SN)
 	}
