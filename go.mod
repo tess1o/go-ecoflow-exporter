@@ -8,7 +8,7 @@ require (
 	github.com/golang-migrate/migrate/v4 v4.17.1
 	github.com/jackc/pgx/v5 v5.6.0
 	github.com/prometheus/client_golang v1.19.1
-	github.com/tess1o/go-ecoflow v1.0.2-0.20240714074819-59ff210be534
+	github.com/tess1o/go-ecoflow v1.1.0
 )
 
 require (

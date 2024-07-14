@@ -54,11 +54,9 @@ func main() {
 	setLoggerLevel()
 
 	slog.Info("Starting the exporter...")
-
 	metricPrefix := getStringOrDefault("METRIC_PREFIX", defaultMetricPrefix)
 
 	var handlers []MetricHandler
-
 	handlers = enablePrometheus(metricPrefix, handlers)
 	handlers = enableTimescaleDb(metricPrefix, handlers)
 	handlers = enableRedis(metricPrefix, handlers)
@@ -74,7 +72,6 @@ func main() {
 	setupGracefulShutdown(handlers, done)
 
 	exporterType := getStringOrDefault("EXPORTER_TYPE", defaultExporterType)
-
 	switch exporterType {
 	case "rest":
 		err := createAndStartRestExporter(handlers)

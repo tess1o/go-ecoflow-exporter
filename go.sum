@@ -87,6 +87,8 @@ github.com/tess1o/go-ecoflow v1.0.2-0.20240713193411-8210ee84f18c h1:XR2CJD2ehra
 github.com/tess1o/go-ecoflow v1.0.2-0.20240713193411-8210ee84f18c/go.mod h1:kqrfk4Y14pHCPKIwp6o7ZbgpohUzQHh7EMX+RUA4JCU=
 github.com/tess1o/go-ecoflow v1.0.2-0.20240714074819-59ff210be534 h1:Zd0sbBe5zGWrWz18g5Pfaok5z5yu8br0xTlXpXUTooQ=
 github.com/tess1o/go-ecoflow v1.0.2-0.20240714074819-59ff210be534/go.mod h1:kqrfk4Y14pHCPKIwp6o7ZbgpohUzQHh7EMX+RUA4JCU=
+github.com/tess1o/go-ecoflow v1.1.0 h1:WCseMmKNdxRMn219ws5Osi5gb8QWdGpw5SqUQ/v7Ipo=
+github.com/tess1o/go-ecoflow v1.1.0/go.mod h1:kqrfk4Y14pHCPKIwp6o7ZbgpohUzQHh7EMX+RUA4JCU=
 go.uber.org/atomic v1.7.0 h1:ADUqmZGgLDDfbSL9ZmPxKTybcoEYHgpYfELNoN+7hsw=
 go.uber.org/atomic v1.7.0/go.mod h1:fEN4uk6kAWBTFdckzkM89CLk9XfWZrxpCo0nPH17wJc=
 golang.org/x/crypto v0.22.0 h1:g1v0xeRhjcugydODzvb3mEM9SQ0HGp9s/nh3COQ/C30=
