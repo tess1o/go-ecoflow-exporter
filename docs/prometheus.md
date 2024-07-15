@@ -7,13 +7,13 @@
       is `rest`.
 
    If  `EXPORTER_TYPE=rest` is selected, then provide values for the following parameters:
-      - `ECOFLOW_ACCESS_KEY` - the access key from the Ecoflow development website
-      - `ECOFLOW_SECRET_KEY` - the secret key from the Ecoflow development website
-   
+    - `ECOFLOW_ACCESS_KEY` - the access key from the Ecoflow development website
+    - `ECOFLOW_SECRET_KEY` - the secret key from the Ecoflow development website
+
    If  `EXPORTER_TYPE=mqtt` is selected, then provide values for the following parameters:
-      - `ECOFLOW_EMAIL` - your email address that you use to log in to the Ecoflow mobile app
-      - `ECOFLOW_PASSWORD` - your ecoflow password
-      - `ECOFLOW_DEVICES` - the list of devices serial numbers separated by comma. For instance: `SN1,SN2,SN3`
+    - `ECOFLOW_EMAIL` - your email address that you use to log in to the Ecoflow mobile app
+    - `ECOFLOW_PASSWORD` - your ecoflow password
+    - `ECOFLOW_DEVICES` - the list of devices serial numbers separated by comma. For instance: `SN1,SN2,SN3`
 
 3. (OPTIONALLY) Update other variables if you need to:
     - `METRIC_PREFIX`: the prefix that will be added to all metrics. Default value is `ecoflow`. For instance
@@ -22,6 +22,11 @@
     - `SCRAPING_INTERVAL` - scrapping interval in seconds. How often should the exporter execute requests to Ecoflow
       Rest API in order to get the data. Default value is 30 seconds. Align this value
       with `docker-compose/prometheus/prometheus.yml`
+    - `MQTT_DEVICE_OFFLINE_THRESHOLD_SECONDS` - the threshold in seconds which indicates how long we should way for a
+      metric message from MQTT broker. Default value: 60 seconds. If we don't receive message within 60 seconds we
+      consider that device is offline. If we don't receive messages within the threshold for all devices, we'll try to
+      reconnect to the MQTT broker (there is a strange behavior that MQTT stop sends messages if you open Ecoflow mobile
+      app and then close it).
     - `DEBUG_ENABLED` - enable debug log messages. Default value is "false". To enable use values `true` or `1`
     - `GRAFANA_USERNAME` - admin username in Grafana. Default value: `grafana`. Can be changed later in Grafana UI
     - `GRAFANA_PASSWORD` - admin password in Grafana. Default value: `grafana`. Can be changed later in Grafana UI

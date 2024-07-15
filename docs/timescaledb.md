@@ -26,18 +26,18 @@ There is no cleanup procedure implemented at the moment, so you might want to cl
 
 1. Go to docker-compose folder: `cd docker-compose`
 2. Update `.env` file with two mandatory parameters:
-   - `TIMESCALE_ENABLED` - true (or 1) if you want to enable integration with TimescaleDB. Default value is false
-   - `EXPORTER_TYPE` - the type of exporter you'd like to use. Possible values: `rest` and `mqtt`. Default value
-     is `rest`.
+    - `TIMESCALE_ENABLED` - true (or 1) if you want to enable integration with TimescaleDB. Default value is false
+    - `EXPORTER_TYPE` - the type of exporter you'd like to use. Possible values: `rest` and `mqtt`. Default value
+      is `rest`.
 
    If  `EXPORTER_TYPE=rest` is selected, then provide values for the following parameters:
-   - `ECOFLOW_ACCESS_KEY` - the access key from the Ecoflow development website
-   - `ECOFLOW_SECRET_KEY` - the secret key from the Ecoflow development website
+    - `ECOFLOW_ACCESS_KEY` - the access key from the Ecoflow development website
+    - `ECOFLOW_SECRET_KEY` - the secret key from the Ecoflow development website
 
    If  `EXPORTER_TYPE=mqtt` is selected, then provide values for the following parameters:
-   - `ECOFLOW_EMAIL` - your email address that you use to log in to the Ecoflow mobile app
-   - `ECOFLOW_PASSWORD` - your ecoflow password
-   - `ECOFLOW_DEVICES` - the list of devices serial numbers separated by comma. For instance: `SN1,SN2,SN3`
+    - `ECOFLOW_EMAIL` - your email address that you use to log in to the Ecoflow mobile app
+    - `ECOFLOW_PASSWORD` - your ecoflow password
+    - `ECOFLOW_DEVICES` - the list of devices serial numbers separated by comma. For instance: `SN1,SN2,SN3`
 
 3. (OPTIONALLY) Update other variables if you need to:
     - `TIMESCALE_USERNAME` - TimescaleDB username. Default value: `postgres`
@@ -49,14 +49,21 @@ There is no cleanup procedure implemented at the moment, so you might want to cl
       metric `bms_bmsStatus.minCellTemp` will be exported to prometheus as `ecoflow.bms_bmsStatus.minCellTemp`.
     - `SCRAPING_INTERVAL` - scrapping interval in seconds. How often should the exporter execute requests to Ecoflow
       Rest API in order to get the data. Default value is 30 seconds.
+    - `MQTT_DEVICE_OFFLINE_THRESHOLD_SECONDS` - the threshold in seconds which indicates how long we should way for a
+      metric message from MQTT broker. Default value: 60 seconds. If we don't receive message within 60 seconds we
+      consider that device is offline. If we don't receive messages within the threshold for all devices, we'll try to
+      reconnect to the MQTT broker (there is a strange behavior that MQTT stop sends messages if you open Ecoflow mobile
+      app and then close it).
     - `DEBUG_ENABLED` - enable debug log messages. Default value is "false". To enable use values `true` or `1`
     - `GRAFANA_USERNAME` - admin username in Grafana. Default value: `grafana`. Can be changed later in Grafana UI
     - `GRAFANA_PASSWORD` - admin password in Grafana. Default value: `grafana`. Can be changed later in Grafana UI
 
 4. Save `.env` file with your changes.
 5. Start timescaledb container: `docker-compose -f docker-compose/timescale-compose.yml up -d`.\
-   :exclamation: *NOTE*: The exporter does not wait until the TimescaleDB is UP, because TimescaleDB is an optional dependency for the
-   exporter. Thus, it's important to start the DB first and then the exporter. There is a retry mechanism to wait for the DB
+   :exclamation: *NOTE*: The exporter does not wait until the TimescaleDB is UP, because TimescaleDB is an optional
+   dependency for the
+   exporter. Thus, it's important to start the DB first and then the exporter. There is a retry mechanism to wait for
+   the DB
    to be operational, however it's better to do not rely on it and start the DB before the exporter.
 6. Start the exporter and
    grafana: `docker-compose -f docker-compose/grafana-compose.yml -f docker-compose/exporter-remote-compose.yml up -d`

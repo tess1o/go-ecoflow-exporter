@@ -25,7 +25,7 @@ const (
 // prometheus
 const (
 	defaultMetricsPort             = "2112"
-	defaultOfflineThresholdSeconds = 30
+	defaultOfflineThresholdSeconds = 60
 )
 
 // timescaledb

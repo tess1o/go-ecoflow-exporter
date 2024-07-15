@@ -105,21 +105,21 @@ func (e *MqttMetricsExporter) OnConnectionLost(_ mqtt.Client, err error) {
 	slog.Error("Lost connection to the broker", "error", err)
 }
 
-func (e *MqttMetricsExporter) OnReconnect(client mqtt.Client, options *mqtt.ClientOptions) {
+func (e *MqttMetricsExporter) OnReconnect(_ mqtt.Client, _ *mqtt.ClientOptions) {
 	slog.Info("Trying to reconnect to the broker...")
 }
 
 func (e *MqttMetricsExporter) monitorDeviceStatus() {
 	for {
-		time.Sleep(e.offlineThreshold / 2) // Check twice as often as the threshold
-		mu.Lock()
+		time.Sleep(e.offlineThreshold)
 		if !e.c.Client.IsConnected() {
 			slog.Debug("MQTT client is not connected to the broker, we don't know the devices statuses...")
 			continue
 		}
+		var offlineDevicesCount = 0
 		for sn, status := range deviceStatuses {
 			if time.Since(status.LastReceived) > e.offlineThreshold {
-				slog.Debug("Device is offline", "serial_number", sn)
+				offlineDevicesCount = offlineDevicesCount + 1
 				for _, handler := range e.handlers {
 					hh := handler
 					go hh.Handle(context.Background(), ecoflow.DeviceInfo{
@@ -129,7 +129,14 @@ func (e *MqttMetricsExporter) monitorDeviceStatus() {
 				}
 			}
 		}
-		mu.Unlock()
+		//if true it means that either all devices are offline or we don't receive any messages from MQTT broker.
+		//either way we need to reconnect the client
+		if len(e.devices) == offlineDevicesCount {
+			slog.Error("All devices are either offline or we don't receive messages from MQTT topic, we'll try to reconnect")
+			e.c.Client.Disconnect(250)
+			time.Sleep(5 * time.Second)
+			e.c.Client.Connect()
+		}
 	}
 }
 
@@ -142,6 +149,7 @@ func (e *MqttMetricsExporter) initDeviceStatuses() {
 	}
 }
 
+// assuming that SN is the last part of the topic ("/app/device/property/${sn}")
 func getSnFromTopic(topic string) string {
 	topicStr := strings.Split(topic, "/")
 	return topicStr[len(topicStr)-1]
