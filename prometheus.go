@@ -88,7 +88,9 @@ func (p *PrometheusExporter) handleOneMetric(device ecoflow.DeviceInfo, field st
 		slog.Error("Unable to generate metric name", "metric", field)
 		return
 	}
+	p.mu.Lock()
 	gauge, ok := p.metrics[deviceMetricName]
+	p.mu.Unlock()
 	if !ok {
 		slog.Debug("Adding new metric", "metric", metricName, "device", device.SN)
 		gauge = prometheus.NewGauge(prometheus.GaugeOpts{
