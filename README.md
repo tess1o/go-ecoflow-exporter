@@ -19,6 +19,10 @@ You can select one of two ways how to fetch data from your Ecoflow devices:
 This project uses library https://github.com/tess1o/go-ecoflow to fetch the metrics from your Ecoflow devices via either
 REST API or MQTT
 
+## Basic usage with MQTT and Prometheus
+
+Follow this guide [Quickstart](docs/quickstart.md) to run the exporter via MQTT and Prometheus
+
 ## How to get Access Token and Secret Token
 
 This is required if you want to use Ecoflow Rest API. For MQTT only Ecoflow username(email) and password are required
