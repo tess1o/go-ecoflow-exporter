@@ -2,11 +2,22 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"regexp"
 	"strings"
 	"unicode"
 )
+
+type EcoflowDevice struct {
+	SN     string `json:"sn"`
+	Name   string `json:"name"`
+	Online int    `json:"online"`
+}
+
+type MetricHandler interface {
+	Handle(ctx context.Context, device EcoflowDevice, rawParameters map[string]interface{})
+}
 
 // generateMetricName takes a rawMetric string (for example "pd.wireUsedTime") received from Ecoflow Rest API.
 // the function returns two values: metricName and deviceMetric name.
@@ -78,4 +89,12 @@ func ecoflowParamToPrometheusMetric(metricKey string) (string, error) {
 	}
 
 	return newKey.String(), nil
+}
+
+func getDeviceName(mapping map[string]string, sn string) string {
+	if _, exists := mapping[sn]; exists {
+		return mapping[sn]
+	} else {
+		return sn
+	}
 }

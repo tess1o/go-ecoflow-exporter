@@ -13,7 +13,9 @@
    If  `EXPORTER_TYPE=mqtt` is selected, then provide values for the following parameters:
     - `ECOFLOW_EMAIL` - your email address that you use to log in to the Ecoflow mobile app
     - `ECOFLOW_PASSWORD` - your ecoflow password
-    - `ECOFLOW_DEVICES` - the list of devices serial numbers separated by comma. For instance: `SN1,SN2,SN3`
+    - `ECOFLOW_DEVICES` - the list of devices serial numbers separated by comma. For instance: `SN1,SN2,SN3`. Instead
+      of `ECOFLOW_DEVICES` you can specify `ECOFLOW_DEVICES_PRETTY_NAMES` which will also work. You can specify both
+      parameters if you wish.
 
 3. (OPTIONALLY) Update other variables if you need to:
     - `METRIC_PREFIX`: the prefix that will be added to all metrics. Default value is `ecoflow`. For instance
@@ -27,6 +29,10 @@
       consider that device is offline. If we don't receive messages within the threshold for all devices, we'll try to
       reconnect to the MQTT broker (there is a strange behavior that MQTT stop sends messages if you open Ecoflow mobile
       app and then close it).
+    - `ECOFLOW_DEVICES_PRETTY_NAMES` - the key/value map of custom names for your devices. Key is a serial number, value
+      is a device name you want to see in Grafana Dashboard. It's helpful to see a meaningful name
+      in Grafana dashboard instead of a serial number.
+      Example: `ECOFLOW_DEVICES_PRETTY_NAMES={"R33XXXXXXXXX":"My Delta 2", "R33YYYYY":"Delta Pro backup"}`
     - `DEBUG_ENABLED` - enable debug log messages. Default value is "false". To enable use values `true` or `1`
     - `GRAFANA_USERNAME` - admin username in Grafana. Default value: `grafana`. Can be changed later in Grafana UI
     - `GRAFANA_PASSWORD` - admin password in Grafana. Default value: `grafana`. Can be changed later in Grafana UI

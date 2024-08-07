@@ -7,25 +7,23 @@ import (
 	"time"
 )
 
-type MetricHandler interface {
-	Handle(ctx context.Context, device ecoflow.DeviceInfo, rawParameters map[string]interface{})
-}
-
-type MetricsExporter struct {
+type RestMetricsExporter struct {
 	c        *ecoflow.Client
 	interval time.Duration
 	handlers []MetricHandler
+	mapping  map[string]string
 }
 
-func NewMetricsExporter(c *ecoflow.Client, interval time.Duration, handlers ...MetricHandler) *MetricsExporter {
-	return &MetricsExporter{
+func NewRestMetricsExporter(c *ecoflow.Client, interval time.Duration, mapping map[string]string, handlers ...MetricHandler) *RestMetricsExporter {
+	return &RestMetricsExporter{
 		c:        c,
 		interval: interval,
 		handlers: handlers,
+		mapping:  mapping,
 	}
 }
 
-func (e *MetricsExporter) ExportMetrics() {
+func (e *RestMetricsExporter) ExportMetrics() {
 	ticker := time.NewTicker(e.interval)
 	now := time.Now()
 	for _ = time.Now(); ; now = <-ticker.C {
@@ -47,7 +45,12 @@ func (e *MetricsExporter) ExportMetrics() {
 
 			for _, handler := range e.handlers {
 				hh := handler
-				go hh.Handle(ctx, dev, rawParameters)
+				ecoflowDevice := EcoflowDevice{
+					SN:     dev.SN,
+					Name:   getDeviceName(e.mapping, dev.SN),
+					Online: dev.Online,
+				}
+				go hh.Handle(ctx, ecoflowDevice, rawParameters)
 			}
 		}
 	}

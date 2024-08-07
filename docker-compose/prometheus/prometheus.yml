@@ -14,5 +14,3 @@ scrape_configs:
       - targets:
           - go_ecoflow_exporter:2112
 
-
-

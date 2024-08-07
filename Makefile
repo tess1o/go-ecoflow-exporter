@@ -14,7 +14,7 @@ migratedown1:
 	migrate -path db/migration -database "$(DB_URL)" -verbose down 1
 
 new_migration:
-	migrate create -ext sql -dir db/migration -seq $(name)
+	migrate create -ext sql -dir migrations/timescale -seq $(name)
 
 build:
 	docker build --platform linux/amd64 -t $(DOCKER_IMAGE_NAME):latest .

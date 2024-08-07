@@ -83,10 +83,6 @@ github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UV
 github.com/stretchr/testify v1.7.0/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
 github.com/stretchr/testify v1.8.3 h1:RP3t2pwF7cMEbC1dqtB6poj3niw/9gnV4Cjg5oW5gtY=
 github.com/stretchr/testify v1.8.3/go.mod h1:sz/lmYIOXD/1dqDmKjjqLyZ2RngseejIcXlSw2iwfAo=
-github.com/tess1o/go-ecoflow v1.0.2-0.20240713193411-8210ee84f18c h1:XR2CJD2ehraf3aG+c8xlRf23jU7/nTDjKfnYvHKvKbo=
-github.com/tess1o/go-ecoflow v1.0.2-0.20240713193411-8210ee84f18c/go.mod h1:kqrfk4Y14pHCPKIwp6o7ZbgpohUzQHh7EMX+RUA4JCU=
-github.com/tess1o/go-ecoflow v1.0.2-0.20240714074819-59ff210be534 h1:Zd0sbBe5zGWrWz18g5Pfaok5z5yu8br0xTlXpXUTooQ=
-github.com/tess1o/go-ecoflow v1.0.2-0.20240714074819-59ff210be534/go.mod h1:kqrfk4Y14pHCPKIwp6o7ZbgpohUzQHh7EMX+RUA4JCU=
 github.com/tess1o/go-ecoflow v1.1.0 h1:WCseMmKNdxRMn219ws5Osi5gb8QWdGpw5SqUQ/v7Ipo=
 github.com/tess1o/go-ecoflow v1.1.0/go.mod h1:kqrfk4Y14pHCPKIwp6o7ZbgpohUzQHh7EMX+RUA4JCU=
 go.uber.org/atomic v1.7.0 h1:ADUqmZGgLDDfbSL9ZmPxKTybcoEYHgpYfELNoN+7hsw=
