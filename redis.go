@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"github.com/go-redis/redis/v8"
-	"github.com/tess1o/go-ecoflow"
 	"log/slog"
 	"strings"
 	"time"
@@ -34,7 +33,7 @@ func NewRedisExporter(config *RedisExporterConfig) *RedisExporter {
 	}
 }
 
-func (r *RedisExporter) Handle(ctx context.Context, device ecoflow.DeviceInfo, rawParameters map[string]interface{}) {
+func (r *RedisExporter) Handle(ctx context.Context, device EcoflowDevice, rawParameters map[string]interface{}) {
 	if device.Online == 0 {
 		slog.Info("Device is offline. Setting all metrics to 0", "SN", device.SN)
 		rawParameters = r.handleOfflineDevice(rawParameters, device)
@@ -43,7 +42,7 @@ func (r *RedisExporter) Handle(ctx context.Context, device ecoflow.DeviceInfo, r
 	r.handleTimeScaleMetrics(ctx, rawParameters, device)
 }
 
-func (r *RedisExporter) handleOfflineDevice(metrics map[string]interface{}, dev ecoflow.DeviceInfo) map[string]interface{} {
+func (r *RedisExporter) handleOfflineDevice(metrics map[string]interface{}, dev EcoflowDevice) map[string]interface{} {
 	for k := range metrics {
 		if strings.Contains(k, dev.SN) {
 			metrics[k] = 0
@@ -52,7 +51,7 @@ func (r *RedisExporter) handleOfflineDevice(metrics map[string]interface{}, dev 
 	return metrics
 }
 
-func (r *RedisExporter) handleTimeScaleMetrics(ctx context.Context, metrics map[string]interface{}, dev ecoflow.DeviceInfo) {
+func (r *RedisExporter) handleTimeScaleMetrics(ctx context.Context, metrics map[string]interface{}, dev EcoflowDevice) {
 	slog.Info("Handling metrics for device", "dev", dev.SN)
 	timestamp := time.Now().Unix()
 	pipe := r.client.Pipeline()

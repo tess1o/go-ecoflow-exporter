@@ -9,7 +9,6 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/tess1o/go-ecoflow"
 	"log"
 	"log/slog"
 	"net/url"
@@ -110,7 +109,7 @@ func runDBMigration(config *TimescaleExporterConfig) {
 	slog.Info("DB migrated successfully")
 }
 
-func (t *TimescaleExporter) Handle(ctx context.Context, device ecoflow.DeviceInfo, rawParameters map[string]interface{}) {
+func (t *TimescaleExporter) Handle(ctx context.Context, device EcoflowDevice, rawParameters map[string]interface{}) {
 	if device.Online == 0 {
 		slog.Info("Device is offline. Setting all metrics to 0", "SN", device.SN)
 		rawParameters = t.handleOfflineDevice(rawParameters, device)
@@ -119,7 +118,7 @@ func (t *TimescaleExporter) Handle(ctx context.Context, device ecoflow.DeviceInf
 	t.handleTimeScaleMetrics(ctx, rawParameters, device)
 }
 
-func (t *TimescaleExporter) handleOfflineDevice(metrics map[string]interface{}, dev ecoflow.DeviceInfo) map[string]interface{} {
+func (t *TimescaleExporter) handleOfflineDevice(metrics map[string]interface{}, dev EcoflowDevice) map[string]interface{} {
 	for k := range metrics {
 		if strings.Contains(k, dev.SN) {
 			metrics[k] = 0
@@ -128,7 +127,7 @@ func (t *TimescaleExporter) handleOfflineDevice(metrics map[string]interface{}, 
 	return metrics
 }
 
-func (t *TimescaleExporter) handleTimeScaleMetrics(ctx context.Context, metrics map[string]interface{}, dev ecoflow.DeviceInfo) {
+func (t *TimescaleExporter) handleTimeScaleMetrics(ctx context.Context, metrics map[string]interface{}, dev EcoflowDevice) {
 	slog.Info("Handling metrics for device", "dev", dev.SN)
 	dbMetrics := make(map[string]interface{})
 	for field, val := range metrics {
@@ -137,18 +136,13 @@ func (t *TimescaleExporter) handleTimeScaleMetrics(ctx context.Context, metrics 
 			slog.Error("Unable to generate metric name", "metric", field)
 			continue
 		}
-		slog.Debug("Updating metric", "metric", metricName, "value", val, "device", dev.SN)
+		slog.Debug("Updating metric", "metric", metricName, "value", val, "device", dev.SN, "device_name", dev.Name)
 		_, ok := val.([]interface{})
 		if ok {
 			slog.Debug("The value is an array, skipping it", "metric", metricName)
 			continue
 		}
-		floatVal, ok := val.(float64)
-		if ok {
-			dbMetrics[metricName] = floatVal
-		} else {
-			slog.Error("Unable to convert value to float, skipping metric", "value", val, "metric", metricName)
-		}
+		dbMetrics[metricName] = val
 	}
 
 	conn, err := t.ConnectionPool.Acquire(ctx)
@@ -158,26 +152,26 @@ func (t *TimescaleExporter) handleTimeScaleMetrics(ctx context.Context, metrics 
 	}
 	defer conn.Release()
 
-	err = insertMetric(ctx, conn, dev.SN, dbMetrics)
+	err = insertMetric(ctx, conn, dev, dbMetrics)
 
 	if err != nil {
 		slog.Error("Unable to insert metric", "db_error", err)
 	} else {
-		slog.Debug("Inserted metrics", "device", dev.SN)
+		slog.Debug("Inserted metrics", "device", dev.SN, "device_name", dev.Name)
 	}
 }
 
 const insertMetricQuery = `
-INSERT INTO ecoflow_metrics (serial_number, metrics)
-VALUES ($1, $2)
+INSERT INTO ecoflow_metrics (serial_number, device_name, metrics)
+VALUES ($1, $2, $3)
 `
 
-func insertMetric(ctx context.Context, conn *pgxpool.Conn, sn string, dbMetrics map[string]interface{}) error {
+func insertMetric(ctx context.Context, conn *pgxpool.Conn, dev EcoflowDevice, dbMetrics map[string]interface{}) error {
 	timescaleMetrics, err := json.Marshal(dbMetrics)
 	if err != nil {
 		return err
 	}
-	_, err = conn.Exec(ctx, insertMetricQuery, sn, timescaleMetrics)
+	_, err = conn.Exec(ctx, insertMetricQuery, dev.SN, dev.Name, timescaleMetrics)
 	return err
 }
 

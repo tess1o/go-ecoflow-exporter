@@ -7,6 +7,10 @@
     - `ECOFLOW_EMAIL` - your email address that you use to log in to the Ecoflow mobile app
     - `ECOFLOW_PASSWORD` - your ecoflow password
     - `ECOFLOW_DEVICES` - the list of devices serial numbers separated by comma. For instance: `SN1,SN2,SN3`
+    - `ECOFLOW_DEVICES_PRETTY_NAMES` - the key/value map of custom names for your devices. Key is a serial number, value
+      is a device name you want to see in Grafana Dashboard. It's helpful to see a meaningful name in Grafana dashboard
+      instead of a serial number.It's optional but either `ECOFLOW_DEVICES` or `ECOFLOW_DEVICES_PRETTY_NAMES` should be
+      populated. Example: `ECOFLOW_DEVICES_PRETTY_NAMES={"R33XXXXXXXXX":"My Delta 2", "R33YYYYY":"Delta Pro backup"}`.
 
 3. (OPTIONALLY) Update other variables if you need to:
     - `GRAFANA_USERNAME` - admin username in Grafana. Default value: `grafana`. Can be changed later in Grafana UI
@@ -18,6 +22,18 @@
 EXPORTER_TYPE=mqtt
 PROMETHEUS_ENABLED=true
 ECOFLOW_DEVICES=Serial_Number_1,Serial_Number_2,Serial_Number_3
+ECOFLOW_EMAIL=my_ecoflow_email@gmail.com
+ECOFLOW_PASSWORD=ecoflow_password
+GRAFANA_USERNAME=admin
+GRAFANA_PASSWORD=admin
+```
+
+or
+
+```properties
+EXPORTER_TYPE=mqtt
+PROMETHEUS_ENABLED=true
+ECOFLOW_DEVICES_PRETTY_NAMES={"R33XXXXXXXXX":"My Delta 2", "R33YYYYY":"Delta Pro backup"}
 ECOFLOW_EMAIL=my_ecoflow_email@gmail.com
 ECOFLOW_PASSWORD=ecoflow_password
 GRAFANA_USERNAME=admin

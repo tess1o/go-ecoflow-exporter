@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/go-redis/redis/v8"
 	"github.com/tess1o/go-ecoflow"
 	"log"
@@ -97,14 +99,20 @@ func main() {
 func createAndStartMqttExporter(handlers []MetricHandler) error {
 	email := os.Getenv("ECOFLOW_EMAIL")
 	password := os.Getenv("ECOFLOW_PASSWORD")
-	devices := os.Getenv("ECOFLOW_DEVICES")
-	if email == "" || password == "" || devices == "" {
+	if email == "" || password == "" {
 		return emailPasswordMandatoryErr
 	}
 
-	devicesList := strings.Split(devices, ",")
-
 	offlineThreshold := getIntOrDefault("MQTT_DEVICE_OFFLINE_THRESHOLD_SECONDS", defaultOfflineThresholdSeconds)
+
+	devicesList, err := getDeviceMapping()
+
+	if err != nil {
+		return err
+	}
+	if len(devicesList) == 0 {
+		return errors.New("either ECOFLOW_DEVICES_PRETTY_NAMES or ECOFLOW_DEVICES must be provided")
+	}
 
 	exporter, err := NewMqttMetricsExporter(email, password, devicesList, time.Second*time.Duration(offlineThreshold), handlers...)
 
@@ -127,9 +135,42 @@ func createAndStartRestExporter(handlers []MetricHandler) error {
 	}
 	client := ecoflow.NewEcoflowClient(accessKey, secretKey)
 
-	exporter := NewMetricsExporter(client, time.Duration(interval)*time.Second, handlers...)
+	mapping, err := getDeviceMapping()
+	if err != nil {
+		return err
+	}
+
+	exporter := NewRestMetricsExporter(client, time.Duration(interval)*time.Second, mapping, handlers...)
 	go exporter.ExportMetrics()
 	return nil
+}
+
+func getDeviceMapping() (map[string]string, error) {
+	var mapping map[string]string
+	names := os.Getenv("ECOFLOW_DEVICES_PRETTY_NAMES")
+	if len(names) == 0 {
+		return mapping, nil
+	}
+	err := json.Unmarshal([]byte(names), &mapping)
+	if err != nil {
+		return nil, fmt.Errorf("unable to parse device mapping, make sure it has format {\"R33XXXXXXXXX\":\"My Delta 2\", \"R33YYYYY\":\"Delta Pro backup\"}. Original error: %w\n", err)
+	}
+
+	devices := os.Getenv("ECOFLOW_DEVICES")
+
+	if len(devices) == 0 {
+		return mapping, nil
+	}
+
+	devicesList := strings.Split(devices, ",")
+
+	for _, device := range devicesList {
+		if _, exists := mapping[device]; !exists {
+			mapping[device] = device
+		}
+	}
+
+	return mapping, nil
 }
 
 func enableTimescaleDb(metricPrefix string, handlers []MetricHandler) []MetricHandler {

@@ -22,12 +22,12 @@ var (
 
 type MqttMetricsExporter struct {
 	c                *ecoflow.MqttClient
-	devices          []string
+	devices          map[string]string
 	handlers         []MetricHandler
 	offlineThreshold time.Duration
 }
 
-func NewMqttMetricsExporter(email, password string, devices []string, offlineThreshold time.Duration, handlers ...MetricHandler) (*MqttMetricsExporter, error) {
+func NewMqttMetricsExporter(email, password string, devices map[string]string, offlineThreshold time.Duration, handlers ...MetricHandler) (*MqttMetricsExporter, error) {
 	exporter := &MqttMetricsExporter{
 		devices:          devices,
 		handlers:         handlers,
@@ -50,17 +50,17 @@ func NewMqttMetricsExporter(email, password string, devices []string, offlineThr
 	return exporter, nil
 }
 
-func (e *MqttMetricsExporter) ExportMetrics() error {
-	err := e.c.Connect()
+func (m *MqttMetricsExporter) ExportMetrics() error {
+	err := m.c.Connect()
 	if err != nil {
 		slog.Error("Unable to connect to ")
 		return err
 	}
-	go e.monitorDeviceStatus()
+	go m.monitorDeviceStatus()
 	return nil
 }
 
-func (e *MqttMetricsExporter) MessageHandler(_ mqtt.Client, msg mqtt.Message) {
+func (m *MqttMetricsExporter) MessageHandler(_ mqtt.Client, msg mqtt.Message) {
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -78,52 +78,54 @@ func (e *MqttMetricsExporter) MessageHandler(_ mqtt.Client, msg mqtt.Message) {
 		slog.Error("Unable to parse message", "message", msg.Payload(), "topic", msg.Topic(), "error", err)
 	} else {
 		slog.Debug("Received device parameters", "topic", msg.Topic(), "params", params)
-		for _, handler := range e.handlers {
+		for _, handler := range m.handlers {
 			hh := handler
-			go hh.Handle(context.Background(), ecoflow.DeviceInfo{
+			go hh.Handle(context.Background(), EcoflowDevice{
 				SN:     serialNumber,
+				Name:   getDeviceName(m.devices, serialNumber),
 				Online: 1,
 			}, params.Params)
 		}
 	}
 }
 
-func (e *MqttMetricsExporter) OnConnect(_ mqtt.Client) {
+func (m *MqttMetricsExporter) OnConnect(_ mqtt.Client) {
 	slog.Info("Connected to the broker, trying to subscribe to the topics")
-	e.initDeviceStatuses()
-	for _, d := range e.devices {
-		err := e.c.SubscribeForParameters(d, e.MessageHandler)
+	m.initDeviceStatuses()
+	for sn, name := range m.devices {
+		err := m.c.SubscribeForParameters(sn, m.MessageHandler)
 		if err != nil {
-			slog.Error("Unable to subscribe for parameters", "error", err, "device", d)
+			slog.Error("Unable to subscribe for parameters", "error", err, "device", sn, "device_name", name)
 		} else {
-			slog.Info("Subscribed to receive parameters", "device", d)
+			slog.Info("Subscribed to receive parameters", "device", sn, "device_name", name)
 		}
 	}
 }
 
-func (e *MqttMetricsExporter) OnConnectionLost(_ mqtt.Client, err error) {
+func (m *MqttMetricsExporter) OnConnectionLost(_ mqtt.Client, err error) {
 	slog.Error("Lost connection to the broker", "error", err)
 }
 
-func (e *MqttMetricsExporter) OnReconnect(_ mqtt.Client, _ *mqtt.ClientOptions) {
+func (m *MqttMetricsExporter) OnReconnect(_ mqtt.Client, _ *mqtt.ClientOptions) {
 	slog.Info("Trying to reconnect to the broker...")
 }
 
-func (e *MqttMetricsExporter) monitorDeviceStatus() {
+func (m *MqttMetricsExporter) monitorDeviceStatus() {
 	for {
-		time.Sleep(e.offlineThreshold)
-		if !e.c.Client.IsConnected() {
+		time.Sleep(m.offlineThreshold)
+		if !m.c.Client.IsConnected() {
 			slog.Debug("MQTT client is not connected to the broker, we don't know the devices statuses...")
 			continue
 		}
 		var offlineDevicesCount = 0
 		for sn, status := range deviceStatuses {
-			if time.Since(status.LastReceived) > e.offlineThreshold {
+			if time.Since(status.LastReceived) > m.offlineThreshold {
 				offlineDevicesCount = offlineDevicesCount + 1
-				for _, handler := range e.handlers {
+				for _, handler := range m.handlers {
 					hh := handler
-					go hh.Handle(context.Background(), ecoflow.DeviceInfo{
+					go hh.Handle(context.Background(), EcoflowDevice{
 						SN:     sn,
+						Name:   getDeviceName(m.devices, sn),
 						Online: 0,
 					}, map[string]interface{}{})
 				}
@@ -131,20 +133,20 @@ func (e *MqttMetricsExporter) monitorDeviceStatus() {
 		}
 		//if true it means that either all devices are offline or we don't receive any messages from MQTT broker.
 		//either way we need to reconnect the client
-		if len(e.devices) == offlineDevicesCount {
+		if len(m.devices) == offlineDevicesCount {
 			slog.Error("All devices are either offline or we don't receive messages from MQTT topic, we'll try to reconnect")
-			e.c.Client.Disconnect(250)
+			m.c.Client.Disconnect(250)
 			time.Sleep(5 * time.Second)
-			e.c.Client.Connect()
+			m.c.Client.Connect()
 		}
 	}
 }
 
-func (e *MqttMetricsExporter) initDeviceStatuses() {
+func (m *MqttMetricsExporter) initDeviceStatuses() {
 	mu.Lock()
 	defer mu.Unlock()
-	pastTime := time.Now().Add(-e.offlineThreshold * 2) // Set to a time far in the past
-	for _, sn := range e.devices {
+	pastTime := time.Now().Add(-m.offlineThreshold * 2) // Set to a time far in the past
+	for _, sn := range m.devices {
 		deviceStatuses[sn] = &DeviceStatus{LastReceived: pastTime}
 	}
 }
