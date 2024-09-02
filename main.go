@@ -45,7 +45,8 @@ const (
 
 var (
 	accessTokenMandatoryErr   = errors.New("ECOFLOW_ACCESS_KEY and ECOFLOW_SECRET_KEY are mandatory")
-	emailPasswordMandatoryErr = errors.New("ECOFLOW_EMAIL and ECOFLOW_PASSWORD and ECOFLOW_DEVICES are mandatory")
+	emailPasswordMandatoryErr = errors.New("ECOFLOW_EMAIL and ECOFLOW_PASSWORD are mandatory")
+	devicesMandatoryErr       = errors.New("either ECOFLOW_DEVICES_PRETTY_NAMES or ECOFLOW_DEVICES must be provided")
 )
 
 type Shutdownable interface {
@@ -111,7 +112,7 @@ func createAndStartMqttExporter(handlers []MetricHandler) error {
 		return err
 	}
 	if len(devicesList) == 0 {
-		return errors.New("either ECOFLOW_DEVICES_PRETTY_NAMES or ECOFLOW_DEVICES must be provided")
+		return devicesMandatoryErr
 	}
 
 	exporter, err := NewMqttMetricsExporter(email, password, devicesList, time.Second*time.Duration(offlineThreshold), handlers...)
@@ -145,23 +146,27 @@ func createAndStartRestExporter(handlers []MetricHandler) error {
 	return nil
 }
 
+// get the devices mapping, where the key is a device serial number and the value is
+// either the pretty name (specified in ECOFLOW_DEVICES_PRETTY_NAMES) or SN itself taken from ECOFLOW_DEVICES
 func getDeviceMapping() (map[string]string, error) {
-	var mapping map[string]string
-	names := os.Getenv("ECOFLOW_DEVICES_PRETTY_NAMES")
-	if len(names) == 0 {
-		return mapping, nil
-	}
-	err := json.Unmarshal([]byte(names), &mapping)
-	if err != nil {
-		return nil, fmt.Errorf("unable to parse device mapping, make sure it has format {\"R33XXXXXXXXX\":\"My Delta 2\", \"R33YYYYY\":\"Delta Pro backup\"}. Original error: %w\n", err)
+	var mapping = make(map[string]string)
+	prettyNames := os.Getenv("ECOFLOW_DEVICES_PRETTY_NAMES")
+	// we have pretty names specified, so will add them to the mapping
+	if len(prettyNames) != 0 {
+		err := json.Unmarshal([]byte(prettyNames), &mapping)
+		if err != nil {
+			return nil, fmt.Errorf("unable to parse device mapping, make sure it has format {\"R33XXXXXXXXX\":\"My Delta 2\", \"R33YYYYY\":\"Delta Pro backup\"}. Original error: %w\n", err)
+		}
 	}
 
 	devices := os.Getenv("ECOFLOW_DEVICES")
 
+	//no devices are specified, will return either empty map or whatever was specified in ECOFLOW_DEVICES_PRETTY_NAMES
 	if len(devices) == 0 {
 		return mapping, nil
 	}
 
+	// the ECOFLOW_DEVICES is not empty, so will add them to the mapping
 	devicesList := strings.Split(devices, ",")
 
 	for _, device := range devicesList {
