@@ -3,6 +3,18 @@ global:
   scrape_timeout: 10s
   evaluation_interval: 30s # Evaluate rules every 30 seconds. The default is every 1 minute.
 
+# add alertmanager. Remove this if you don't need alerts
+alerting:
+  alertmanagers:
+    - scheme: http
+      static_configs:
+        - targets:
+            - alertmanager:9093
+
+# can be removed if alertmanager is not used
+rule_files:
+  - 'alerts/*.yml'
+
 scrape_configs:
   - job_name: prometheus
     static_configs:

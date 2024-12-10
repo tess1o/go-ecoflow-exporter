@@ -54,6 +54,9 @@ flexibility.
 
 See documentation here: [Redis](docs/redis.md)
 
+## How to add AlertManager
+See documentation here: [alertmanager.md](docs/alertmanager.md)
+
 ## Compare to other exporters
 
 This implementation is inspired by https://github.com/berezhinskiy/ecoflow_exporter, and it's fully
