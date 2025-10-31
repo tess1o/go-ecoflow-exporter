@@ -1,14 +1,22 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
-	mqtt "github.com/eclipse/paho.mqtt.golang"
-	"github.com/tess1o/go-ecoflow"
+	"fmt"
+	"io"
+	"log"
 	"log/slog"
+	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	mqtt "github.com/eclipse/paho.mqtt.golang"
+	"github.com/tess1o/go-ecoflow"
 )
 
 type DeviceStatus struct {
@@ -25,13 +33,21 @@ type MqttMetricsExporter struct {
 	devices          map[string]string
 	handlers         []MetricHandler
 	offlineThreshold time.Duration
+	userId           string
 }
 
 func NewMqttMetricsExporter(email, password string, devices map[string]string, offlineThreshold time.Duration, handlers ...MetricHandler) (*MqttMetricsExporter, error) {
+	// Get userId first (needed for ping mechanism)
+	userId, err := getUserId(context.Background(), email, password)
+	if err != nil {
+		return nil, err
+	}
+
 	exporter := &MqttMetricsExporter{
 		devices:          devices,
 		handlers:         handlers,
 		offlineThreshold: offlineThreshold,
+		userId:           userId,
 	}
 	configuration := ecoflow.MqttClientConfiguration{
 		Email:            email,
@@ -53,10 +69,13 @@ func NewMqttMetricsExporter(email, password string, devices map[string]string, o
 func (m *MqttMetricsExporter) ExportMetrics() error {
 	err := m.c.Connect()
 	if err != nil {
-		slog.Error("Unable to connect to ")
+		slog.Error("Unable to connect to MQTT broker")
 		return err
 	}
 	go m.monitorDeviceStatus()
+	// Start periodic ping to keep connection alive
+	m.startPingRoutine()
+	slog.Info("Started RTC time ping routine to keep devices active")
 	return nil
 }
 
@@ -98,6 +117,8 @@ func (m *MqttMetricsExporter) OnConnect(_ mqtt.Client) {
 			slog.Error("Unable to subscribe for parameters", "error", err, "device", sn, "device_name", name)
 		} else {
 			slog.Info("Subscribed to receive parameters", "device", sn, "device_name", name)
+			// Request initial data from device (like the official app does)
+			m.requestLatestQuotas(sn)
 		}
 	}
 }
@@ -155,4 +176,143 @@ func (m *MqttMetricsExporter) initDeviceStatuses() {
 func getSnFromTopic(topic string) string {
 	topicStr := strings.Split(topic, "/")
 	return topicStr[len(topicStr)-1]
+}
+
+// getUserId gets the userId by logging in to EcoFlow API
+func getUserId(ctx context.Context, email, password string) (string, error) {
+	params := map[string]string{
+		"email":    email,
+		"password": base64.StdEncoding.EncodeToString([]byte(password)),
+		"scene":    "IOT_APP",
+		"userType": "ECOFLOW",
+	}
+	jsonParams, err := json.Marshal(params)
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.ecoflow.com/auth/login", bytes.NewReader(jsonParams))
+	if err != nil {
+		return "", err
+	}
+
+	req.Header.Add("lang", "en_US")
+	req.Header.Add("content-type", "application/json")
+
+	client := http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			slog.Warn("Failed to close response body", "error", closeErr)
+		}
+	}()
+
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	var loginResponse struct {
+		Data struct {
+			User struct {
+				UserId string `json:"userId"`
+			} `json:"user"`
+		} `json:"data"`
+	}
+
+	err = json.Unmarshal(responseBody, &loginResponse)
+	if err != nil {
+		log.Fatalf("Unable to get user's id: %s, error: %s", responseBody, err)
+		return "", err
+	}
+
+	return loginResponse.Data.User.UserId, nil
+}
+
+// requestLatestQuotas requests the device to start pushing data (initial data request)
+func (m *MqttMetricsExporter) requestLatestQuotas(sn string) {
+	message := map[string]interface{}{
+		"id":          strconv.FormatInt(time.Now().UnixMilli(), 10),
+		"version":     "1.1",
+		"from":        "Android",
+		"operateType": "latestQuotas",
+		"params":      map[string]interface{}{},
+	}
+
+	payload, err := json.Marshal(message)
+	if err != nil {
+		slog.Error("Failed to marshal latestQuotas message", "error", err, "device", sn)
+		return
+	}
+
+	topic := fmt.Sprintf("/app/%s/%s/thing/property/get", m.userId, sn)
+	token := m.c.Client.Publish(topic, 1, false, payload)
+	token.Wait()
+
+	if token.Error() != nil {
+		slog.Error("Failed to request latest quotas", "error", token.Error(), "device", sn, "topic", topic)
+	} else {
+		slog.Info("Requested latest quotas from device", "device", sn, "topic", topic)
+	}
+}
+
+// sendRtcTimePing sends a setRtcTime command to keep the connection alive
+func (m *MqttMetricsExporter) sendRtcTimePing(sn string) {
+	now := time.Now()
+
+	message := map[string]interface{}{
+		"from":        "Android",
+		"id":          strconv.FormatInt(time.Now().UnixMilli(), 10),
+		"moduleType":  2,
+		"operateType": "setRtcTime",
+		"params": map[string]interface{}{
+			"min":   now.Minute(),
+			"day":   now.Day(),
+			"week":  int(now.Weekday()),
+			"sec":   now.Second(),
+			"month": int(now.Month()),
+			"hour":  now.Hour(),
+			"year":  now.Year(),
+		},
+		"version": "1.0",
+	}
+
+	payload, err := json.Marshal(message)
+	if err != nil {
+		slog.Error("Failed to marshal ping message", "error", err, "device", sn)
+		return
+	}
+
+	topic := fmt.Sprintf("/app/%s/%s/thing/property/set", m.userId, sn)
+	token := m.c.Client.Publish(topic, 1, false, payload)
+	token.Wait()
+
+	if token.Error() != nil {
+		slog.Error("Failed to send ping", "error", token.Error(), "device", sn, "topic", topic)
+	} else {
+		slog.Debug("Sent RTC time ping", "device", sn, "topic", topic)
+	}
+}
+
+// startPingRoutine starts a goroutine that sends periodic pings to all devices
+func (m *MqttMetricsExporter) startPingRoutine() {
+	go func() {
+		ticker := time.NewTicker(20 * time.Second)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			if !m.c.Client.IsConnected() {
+				slog.Debug("MQTT client not connected, skipping ping")
+				continue
+			}
+
+			for sn, name := range m.devices {
+				slog.Debug("Sending keepalive ping", "device", sn, "device_name", name)
+				m.sendRtcTimePing(sn)
+			}
+		}
+	}()
 }
