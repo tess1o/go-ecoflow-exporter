@@ -3,12 +3,13 @@ package main
 import (
 	"context"
 	"errors"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // check that PrometheusExporter implements MetricHandler
@@ -63,11 +64,22 @@ func (p *PrometheusExporter) Handle(_ context.Context, device EcoflowDevice, raw
 		p.handleOfflineDevice(device)
 		return
 	}
-	rawParameters["online"] = float64(device.Online)
-	p.handleMetrics(device, rawParameters)
+
+	// Create a copy of parameters and add online status (don't mutate input)
+	parameters := make(map[string]interface{}, len(rawParameters)+1)
+	for k, v := range rawParameters {
+		parameters[k] = v
+	}
+	parameters["online"] = float64(device.Online)
+
+	p.handleMetrics(device, parameters)
 }
 
 func (p *PrometheusExporter) handleOfflineDevice(device EcoflowDevice) {
+	// Hold read lock while iterating over metrics map
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
 	for k, v := range p.metrics {
 		if strings.Contains(k, device.SN) {
 			v.Set(0)
@@ -87,9 +99,10 @@ func (p *PrometheusExporter) handleOneMetric(device EcoflowDevice, field string,
 		slog.Error("Unable to generate metric name", "metric", field)
 		return
 	}
+
+	// Hold lock for entire check-and-register operation to prevent race condition
 	p.mu.Lock()
 	gauge, ok := p.metrics[deviceMetricName]
-	p.mu.Unlock()
 	if !ok {
 		slog.Debug("Adding new metric", "metric", metricName, "device", device.SN, "device_name", device.Name)
 		gauge = prometheus.NewGauge(prometheus.GaugeOpts{
@@ -100,22 +113,23 @@ func (p *PrometheusExporter) handleOneMetric(device EcoflowDevice, field string,
 			},
 		})
 		prometheus.MustRegister(gauge)
-		p.mu.Lock()
 		p.metrics[deviceMetricName] = gauge
-		p.mu.Unlock()
 	} else {
 		slog.Debug("Updating metric", "metric", metricName, "value", val, "device", device.SN, "device_name", device.Name)
 	}
+	p.mu.Unlock()
+
+	// Check if value is an array
 	_, ok = val.([]interface{})
 	if ok {
 		slog.Debug("The value is an array, skipping it", "metric", metricName)
 		return
 	}
+
+	// Try to convert to float and set value
 	floatVal, ok := val.(float64)
 	if ok {
 		gauge.Set(floatVal)
-	} else {
-		slog.Error("Unable to convert value to float, skipping metric", "value", val, "metric", metricName)
 	}
 }
 

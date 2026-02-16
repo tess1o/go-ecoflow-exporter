@@ -30,6 +30,12 @@ const (
 	defaultOfflineThresholdSeconds = 60
 )
 
+// mqtt
+const (
+	defaultPingIntervalSeconds         = 20
+	defaultStateRefreshIntervalSeconds = 300 // 5 minutes
+)
+
 // timescaledb
 const (
 	timescaleDbSource = "file://migrations/timescale"
@@ -105,6 +111,8 @@ func createAndStartMqttExporter(handlers []MetricHandler) error {
 	}
 
 	offlineThreshold := getIntOrDefault("MQTT_DEVICE_OFFLINE_THRESHOLD_SECONDS", defaultOfflineThresholdSeconds)
+	pingInterval := getIntOrDefault("MQTT_PING_INTERVAL_SECONDS", defaultPingIntervalSeconds)
+	stateRefreshInterval := getIntOrDefault("MQTT_STATE_REFRESH_INTERVAL_SECONDS", defaultStateRefreshIntervalSeconds)
 
 	devicesList, err := getDeviceMapping()
 
@@ -115,11 +123,23 @@ func createAndStartMqttExporter(handlers []MetricHandler) error {
 		return devicesMandatoryErr
 	}
 
-	exporter, err := NewMqttMetricsExporter(email, password, devicesList, time.Second*time.Duration(offlineThreshold), handlers...)
+	exporter, err := NewMqttMetricsExporter(
+		email,
+		password,
+		devicesList,
+		time.Second*time.Duration(offlineThreshold),
+		time.Second*time.Duration(pingInterval),
+		time.Second*time.Duration(stateRefreshInterval),
+		handlers...)
 
 	if err != nil {
 		return err
 	}
+
+	slog.Info("MQTT exporter configuration",
+		"offline_threshold", offlineThreshold,
+		"ping_interval", pingInterval,
+		"state_refresh_interval", stateRefreshInterval)
 
 	go exporter.ExportMetrics()
 	return nil
