@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package ecoflow;
+
+option go_package = "github.com/tess1o/go-ecoflow-exporter/internal/protobuf";
+
+message HeaderMessage {
+    repeated Header header = 1;
+}
+
+message Header {
+    bytes pdata = 1;           // Device data (may be encrypted)
+    int32 src = 2;             // Source
+    int32 dest = 3;            // Destination
+    int32 d_src = 4;           // Device source
+    int32 d_dest = 5;          // Device destination
+    int32 enc_type = 6;        // 0=none, 1=XOR encrypted
+    int32 check_type = 7;      // Checksum type
+    int32 cmd_func = 8;        // Command function ID
+    int32 cmd_id = 9;          // Command ID
+    int32 data_len = 10;       // Data length
+    int32 need_ack = 11;       // Needs acknowledgment
+    int32 is_ack = 12;         // Is acknowledgment
+    int32 ack_type = 13;       // Acknowledgment type
+    int32 seq = 14;            // Sequence number (used for XOR key)
+    int32 product_id = 15;     // Product ID
+    int32 version = 16;        // Version
+    int32 payload_ver = 17;    // Payload version
+    int32 time_snap = 18;      // Timestamp
+    int32 is_rw_cmd = 19;      // Is read/write command
+    int32 is_queue = 20;       // Is queued
+    int32 ack_seq = 21;        // Acknowledgment sequence
+    int32 code_type = 22;      // Code type
+}

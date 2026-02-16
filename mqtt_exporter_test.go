@@ -11,6 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tess1o/go-ecoflow"
+	"go-ecoflow-exporter/internal/protobuf"
+	"google.golang.org/protobuf/proto"
 )
 
 // MockMetricHandler is a test handler that captures received metrics
@@ -86,6 +88,7 @@ func TestMqttExporter_StateCache_PartialUpdates(t *testing.T) {
 			lastAttempt: make(map[string]time.Time),
 			lastSuccess: make(map[string]time.Time),
 		},
+		protobufDecoder: protobuf.NewProtobufDecoder(),
 	}
 
 	// Initialize device statuses
@@ -177,6 +180,7 @@ func TestMqttExporter_StateCache_MultipleDevices(t *testing.T) {
 			lastAttempt: make(map[string]time.Time),
 			lastSuccess: make(map[string]time.Time),
 		},
+		protobufDecoder: protobuf.NewProtobufDecoder(),
 	}
 
 	// Initialize device statuses
@@ -254,6 +258,7 @@ func TestMqttExporter_UnconfiguredDevice(t *testing.T) {
 			lastAttempt: make(map[string]time.Time),
 			lastSuccess: make(map[string]time.Time),
 		},
+		protobufDecoder: protobuf.NewProtobufDecoder(),
 	}
 
 	// Send message for unconfigured device
@@ -305,6 +310,7 @@ func TestMqttExporter_InvalidTopic(t *testing.T) {
 			lastAttempt: make(map[string]time.Time),
 			lastSuccess: make(map[string]time.Time),
 		},
+		protobufDecoder: protobuf.NewProtobufDecoder(),
 	}
 
 	testCases := []struct {
@@ -367,6 +373,7 @@ func TestMqttExporter_EmptyParameters(t *testing.T) {
 			lastAttempt: make(map[string]time.Time),
 			lastSuccess: make(map[string]time.Time),
 		},
+		protobufDecoder: protobuf.NewProtobufDecoder(),
 	}
 
 	mu.Lock()
@@ -413,6 +420,7 @@ func TestMqttExporter_InvalidJSON(t *testing.T) {
 			lastAttempt: make(map[string]time.Time),
 			lastSuccess: make(map[string]time.Time),
 		},
+		protobufDecoder: protobuf.NewProtobufDecoder(),
 	}
 
 	mu.Lock()
@@ -461,6 +469,7 @@ func TestMqttExporter_ConcurrentMessageHandling(t *testing.T) {
 			lastAttempt: make(map[string]time.Time),
 			lastSuccess: make(map[string]time.Time),
 		},
+		protobufDecoder: protobuf.NewProtobufDecoder(),
 	}
 
 	// Initialize device statuses
@@ -667,3 +676,373 @@ func (m *mockMQTTMessage) SetAutoAck(autoAck bool) {}
 func (m *mockMQTTMessage) AutoAck() bool           { return false }
 
 var _ mqtt.Message = (*mockMQTTMessage)(nil)
+
+// TestMessageHandler_ProtobufMessage tests basic protobuf message decoding
+func TestMessageHandler_ProtobufMessage(t *testing.T) {
+	handler := &MockMetricHandler{}
+
+	devices := map[string]string{
+		"PROTO123": "ProtobufDevice",
+	}
+
+	exporter := &MqttMetricsExporter{
+		devices:              devices,
+		handlers:             []MetricHandler{handler},
+		offlineThreshold:     60 * time.Second,
+		userId:               "testuser",
+		pingInterval:         20 * time.Second,
+		stateRefreshInterval: 300 * time.Second,
+		deviceState:          make(map[string]map[string]interface{}),
+		stateMu:              sync.RWMutex{},
+		pingStats: &PingStats{
+			successful:  make(map[string]int),
+			failed:      make(map[string]int),
+			lastAttempt: make(map[string]time.Time),
+			lastSuccess: make(map[string]time.Time),
+		},
+		protobufDecoder: protobuf.NewProtobufDecoder(),
+	}
+
+	// Initialize device statuses
+	mu.Lock()
+	deviceStatuses["PROTO123"] = &DeviceStatus{LastReceived: time.Now()}
+	mu.Unlock()
+
+	// Create a protobuf message with unencrypted JSON data
+	pdataJSON := map[string]interface{}{
+		"battery.level": 75.5,
+		"ac.voltage":    230.0,
+		"dc.current":    3.8,
+	}
+	pdataBytes, _ := json.Marshal(pdataJSON)
+
+	protoMsg := &protobuf.HeaderMessage{
+		Header: []*protobuf.Header{
+			{
+				Pdata:   pdataBytes,
+				EncType: 0, // No encryption
+				CmdFunc: 1,
+				CmdId:   2,
+				Seq:     0,
+			},
+		},
+	}
+
+	payload, err := proto.Marshal(protoMsg)
+	require.NoError(t, err)
+
+	mockMsg := &mockMQTTMessage{
+		topic:   "/app/device/property/PROTO123",
+		payload: payload,
+	}
+
+	exporter.MessageHandler(nil, mockMsg)
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify handler received the decoded params
+	assert.Equal(t, 1, handler.GetReceivedCount(), "Handler should be called once")
+	params := handler.GetLastParams()
+	require.NotNil(t, params)
+
+	assert.Equal(t, 75.5, params["battery.level"], "Battery level should match")
+	assert.Equal(t, 230.0, params["ac.voltage"], "AC voltage should match")
+	assert.Equal(t, 3.8, params["dc.current"], "DC current should match")
+}
+
+// TestMessageHandler_ProtobufWithEncryption tests protobuf with XOR encryption
+func TestMessageHandler_ProtobufWithEncryption(t *testing.T) {
+	handler := &MockMetricHandler{}
+
+	devices := map[string]string{
+		"PROTO456": "EncryptedDevice",
+	}
+
+	exporter := &MqttMetricsExporter{
+		devices:              devices,
+		handlers:             []MetricHandler{handler},
+		offlineThreshold:     60 * time.Second,
+		userId:               "testuser",
+		pingInterval:         20 * time.Second,
+		stateRefreshInterval: 300 * time.Second,
+		deviceState:          make(map[string]map[string]interface{}),
+		stateMu:              sync.RWMutex{},
+		pingStats: &PingStats{
+			successful:  make(map[string]int),
+			failed:      make(map[string]int),
+			lastAttempt: make(map[string]time.Time),
+			lastSuccess: make(map[string]time.Time),
+		},
+		protobufDecoder: protobuf.NewProtobufDecoder(),
+	}
+
+	mu.Lock()
+	deviceStatuses["PROTO456"] = &DeviceStatus{LastReceived: time.Now()}
+	mu.Unlock()
+
+	// Create JSON data and encrypt it
+	pdataJSON := map[string]interface{}{
+		"battery.level": 60.0,
+		"temperature":   25.5,
+	}
+	pdataBytes, _ := json.Marshal(pdataJSON)
+
+	// Encrypt with XOR using seq number
+	seq := int32(42)
+	encryptedPdata := make([]byte, len(pdataBytes))
+	seqByte := byte(seq & 0xFF)
+	for i, b := range pdataBytes {
+		encryptedPdata[i] = b ^ seqByte
+	}
+
+	protoMsg := &protobuf.HeaderMessage{
+		Header: []*protobuf.Header{
+			{
+				Pdata:   encryptedPdata,
+				EncType: 1, // XOR encryption
+				CmdFunc: 10,
+				CmdId:   20,
+				Seq:     seq,
+			},
+		},
+	}
+
+	payload, err := proto.Marshal(protoMsg)
+	require.NoError(t, err)
+
+	mockMsg := &mockMQTTMessage{
+		topic:   "/app/device/property/PROTO456",
+		payload: payload,
+	}
+
+	exporter.MessageHandler(nil, mockMsg)
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify decryption worked
+	assert.Equal(t, 1, handler.GetReceivedCount())
+	params := handler.GetLastParams()
+	require.NotNil(t, params)
+
+	assert.Equal(t, 60.0, params["battery.level"])
+	assert.Equal(t, 25.5, params["temperature"])
+}
+
+// TestMessageHandler_ProtobufPartialUpdates tests state cache with protobuf
+func TestMessageHandler_ProtobufPartialUpdates(t *testing.T) {
+	handler := &MockMetricHandler{}
+
+	devices := map[string]string{
+		"PROTO789": "StateCacheDevice",
+	}
+
+	exporter := &MqttMetricsExporter{
+		devices:              devices,
+		handlers:             []MetricHandler{handler},
+		offlineThreshold:     60 * time.Second,
+		userId:               "testuser",
+		pingInterval:         20 * time.Second,
+		stateRefreshInterval: 300 * time.Second,
+		deviceState:          make(map[string]map[string]interface{}),
+		stateMu:              sync.RWMutex{},
+		pingStats: &PingStats{
+			successful:  make(map[string]int),
+			failed:      make(map[string]int),
+			lastAttempt: make(map[string]time.Time),
+			lastSuccess: make(map[string]time.Time),
+		},
+		protobufDecoder: protobuf.NewProtobufDecoder(),
+	}
+
+	mu.Lock()
+	deviceStatuses["PROTO789"] = &DeviceStatus{LastReceived: time.Now()}
+	mu.Unlock()
+
+	// First protobuf message with full state
+	pdata1 := map[string]interface{}{
+		"battery.level": 90.0,
+		"ac.voltage":    240.0,
+		"dc.current":    4.5,
+	}
+	pdata1Bytes, _ := json.Marshal(pdata1)
+
+	msg1 := &protobuf.HeaderMessage{
+		Header: []*protobuf.Header{
+			{
+				Pdata:   pdata1Bytes,
+				EncType: 0,
+				CmdFunc: 1,
+				CmdId:   1,
+			},
+		},
+	}
+
+	payload1, _ := proto.Marshal(msg1)
+	mockMsg1 := &mockMQTTMessage{
+		topic:   "/app/device/property/PROTO789",
+		payload: payload1,
+	}
+
+	exporter.MessageHandler(nil, mockMsg1)
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify first message
+	assert.Equal(t, 1, handler.GetReceivedCount())
+	params1 := handler.GetLastParams()
+	assert.Equal(t, 90.0, params1["battery.level"])
+	assert.Equal(t, 240.0, params1["ac.voltage"])
+	assert.Equal(t, 4.5, params1["dc.current"])
+
+	// Second protobuf message with PARTIAL update (only battery)
+	pdata2 := map[string]interface{}{
+		"battery.level": 85.0, // Only this changed
+	}
+	pdata2Bytes, _ := json.Marshal(pdata2)
+
+	msg2 := &protobuf.HeaderMessage{
+		Header: []*protobuf.Header{
+			{
+				Pdata:   pdata2Bytes,
+				EncType: 0,
+				CmdFunc: 1,
+				CmdId:   1,
+			},
+		},
+	}
+
+	payload2, _ := proto.Marshal(msg2)
+	mockMsg2 := &mockMQTTMessage{
+		topic:   "/app/device/property/PROTO789",
+		payload: payload2,
+	}
+
+	handler.Reset()
+	exporter.MessageHandler(nil, mockMsg2)
+	time.Sleep(100 * time.Millisecond)
+
+	// CRITICAL: Verify state cache maintains full state
+	assert.Equal(t, 1, handler.GetReceivedCount())
+	params2 := handler.GetLastParams()
+	assert.Equal(t, 85.0, params2["battery.level"], "Battery should be updated")
+	assert.Equal(t, 240.0, params2["ac.voltage"], "AC voltage should persist from cache")
+	assert.Equal(t, 4.5, params2["dc.current"], "DC current should persist from cache")
+}
+
+// TestMessageHandler_JSONStillWorks verifies backward compatibility with JSON
+func TestMessageHandler_JSONStillWorks(t *testing.T) {
+	handler := &MockMetricHandler{}
+
+	devices := map[string]string{
+		"JSON123": "JSONDevice",
+	}
+
+	exporter := &MqttMetricsExporter{
+		devices:              devices,
+		handlers:             []MetricHandler{handler},
+		offlineThreshold:     60 * time.Second,
+		userId:               "testuser",
+		pingInterval:         20 * time.Second,
+		stateRefreshInterval: 300 * time.Second,
+		deviceState:          make(map[string]map[string]interface{}),
+		stateMu:              sync.RWMutex{},
+		pingStats: &PingStats{
+			successful:  make(map[string]int),
+			failed:      make(map[string]int),
+			lastAttempt: make(map[string]time.Time),
+			lastSuccess: make(map[string]time.Time),
+		},
+		protobufDecoder: protobuf.NewProtobufDecoder(),
+	}
+
+	mu.Lock()
+	deviceStatuses["JSON123"] = &DeviceStatus{LastReceived: time.Now()}
+	mu.Unlock()
+
+	// Send a traditional JSON message
+	msg := ecoflow.MqttDeviceParams{
+		Params: map[string]interface{}{
+			"battery.level": 55.5,
+			"ac.voltage":    220.0,
+		},
+	}
+	payload, _ := json.Marshal(msg)
+
+	mockMsg := &mockMQTTMessage{
+		topic:   "/app/device/property/JSON123",
+		payload: payload,
+	}
+
+	exporter.MessageHandler(nil, mockMsg)
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify JSON messages still work exactly as before
+	assert.Equal(t, 1, handler.GetReceivedCount())
+	params := handler.GetLastParams()
+	assert.Equal(t, 55.5, params["battery.level"])
+	assert.Equal(t, 220.0, params["ac.voltage"])
+}
+
+// TestMessageHandler_ProtobufMultipleHeaders tests merging multiple headers
+func TestMessageHandler_ProtobufMultipleHeaders(t *testing.T) {
+	handler := &MockMetricHandler{}
+
+	devices := map[string]string{
+		"MULTI123": "MultiHeaderDevice",
+	}
+
+	exporter := &MqttMetricsExporter{
+		devices:              devices,
+		handlers:             []MetricHandler{handler},
+		offlineThreshold:     60 * time.Second,
+		userId:               "testuser",
+		pingInterval:         20 * time.Second,
+		stateRefreshInterval: 300 * time.Second,
+		deviceState:          make(map[string]map[string]interface{}),
+		stateMu:              sync.RWMutex{},
+		pingStats: &PingStats{
+			successful:  make(map[string]int),
+			failed:      make(map[string]int),
+			lastAttempt: make(map[string]time.Time),
+			lastSuccess: make(map[string]time.Time),
+		},
+		protobufDecoder: protobuf.NewProtobufDecoder(),
+	}
+
+	mu.Lock()
+	deviceStatuses["MULTI123"] = &DeviceStatus{LastReceived: time.Now()}
+	mu.Unlock()
+
+	// Create protobuf message with multiple headers
+	pdata1, _ := json.Marshal(map[string]interface{}{"battery.level": 70.0})
+	pdata2, _ := json.Marshal(map[string]interface{}{"ac.voltage": 220.0})
+
+	protoMsg := &protobuf.HeaderMessage{
+		Header: []*protobuf.Header{
+			{
+				Pdata:   pdata1,
+				EncType: 0,
+				CmdFunc: 1,
+				CmdId:   1,
+			},
+			{
+				Pdata:   pdata2,
+				EncType: 0,
+				CmdFunc: 2,
+				CmdId:   2,
+			},
+		},
+	}
+
+	payload, _ := proto.Marshal(protoMsg)
+	mockMsg := &mockMQTTMessage{
+		topic:   "/app/device/property/MULTI123",
+		payload: payload,
+	}
+
+	exporter.MessageHandler(nil, mockMsg)
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify both headers were merged
+	assert.Equal(t, 1, handler.GetReceivedCount())
+	params := handler.GetLastParams()
+	assert.Equal(t, 70.0, params["battery.level"])
+	assert.Equal(t, 220.0, params["ac.voltage"])
+}

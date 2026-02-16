@@ -17,6 +17,7 @@ import (
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/tess1o/go-ecoflow"
+	"go-ecoflow-exporter/internal/protobuf"
 )
 
 type DeviceStatus struct {
@@ -47,6 +48,7 @@ type MqttMetricsExporter struct {
 	deviceState          map[string]map[string]interface{} // SN -> full device state
 	stateMu              sync.RWMutex
 	pingStats            *PingStats
+	protobufDecoder      *protobuf.ProtobufDecoder // Persists to track seen devices
 }
 
 func NewMqttMetricsExporter(email, password string, devices map[string]string, offlineThreshold, pingInterval, stateRefreshInterval time.Duration, handlers ...MetricHandler) (*MqttMetricsExporter, error) {
@@ -94,6 +96,7 @@ func NewMqttMetricsExporter(email, password string, devices map[string]string, o
 			lastAttempt: make(map[string]time.Time),
 			lastSuccess: make(map[string]time.Time),
 		},
+		protobufDecoder: protobuf.NewProtobufDecoder(),
 	}
 	configuration := ecoflow.MqttClientConfiguration{
 		Email:            email,
@@ -147,17 +150,56 @@ func (m *MqttMetricsExporter) MessageHandler(_ mqtt.Client, msg mqtt.Message) {
 	deviceStatuses[serialNumber].LastReceived = time.Now()
 	mu.Unlock()
 
-	var params ecoflow.MqttDeviceParams
-	err := json.Unmarshal(msg.Payload(), &params)
-	if err != nil {
-		slog.Error("Unable to parse message", "message", msg.Payload(), "topic", msg.Topic(), "error", err)
+	// Detect message format and decode
+	payload := msg.Payload()
+	format := protobuf.DetectFormat(payload)
+
+	var params map[string]interface{}
+	var err error
+
+	switch format {
+	case protobuf.FormatJSON:
+		// Existing JSON path
+		var deviceParams ecoflow.MqttDeviceParams
+		err = json.Unmarshal(payload, &deviceParams)
+		if err != nil {
+			slog.Error("Unable to parse JSON message", "topic", msg.Topic(), "error", err)
+			return
+		}
+		params = deviceParams.Params
+		slog.Debug("Received JSON device parameters", "topic", msg.Topic(), "param_count", len(params))
+
+	case protobuf.FormatProtobuf:
+		// New protobuf path - log first occurrence per device
+		m.protobufDecoder.LogFirstProtobufMessage(serialNumber)
+
+		params, err = m.protobufDecoder.DecodeProtobufMessage(payload)
+		if err != nil {
+			slog.Error("Unable to parse protobuf message",
+				"topic", msg.Topic(),
+				"device", serialNumber,
+				"error", err,
+				"payload_len", len(payload))
+			return
+		}
+		slog.Debug("Received protobuf device parameters", "topic", msg.Topic(), "param_count", len(params))
+
+	case protobuf.FormatUnknown:
+		previewLen := 32
+		if len(payload) < previewLen {
+			previewLen = len(payload)
+		}
+		slog.Info("Unknown message format - not JSON or protobuf",
+			"topic", msg.Topic(),
+			"device", serialNumber,
+			"payload_len", len(payload),
+			"payload_preview", fmt.Sprintf("%x", payload[:previewLen]),
+			"help", "Please report this to https://github.com/tess1o/go-ecoflow-exporter/issues")
 		return
 	}
 
-	slog.Debug("Received device parameters", "topic", msg.Topic(), "param_count", len(params.Params))
-
 	// Skip if no parameters received
-	if len(params.Params) == 0 {
+	if len(params) == 0 {
 		slog.Debug("Received empty parameters, skipping", "device", serialNumber)
 		return
 	}
@@ -167,7 +209,7 @@ func (m *MqttMetricsExporter) MessageHandler(_ mqtt.Client, msg mqtt.Message) {
 	if m.deviceState[serialNumber] == nil {
 		m.deviceState[serialNumber] = make(map[string]interface{})
 	}
-	for k, v := range params.Params {
+	for k, v := range params {
 		m.deviceState[serialNumber][k] = v
 	}
 	// Create a copy of the full state to pass to handlers
