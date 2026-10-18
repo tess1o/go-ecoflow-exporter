@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"sync"
 	"testing"
@@ -747,6 +748,41 @@ func TestMessageHandler_ProtobufMessage(t *testing.T) {
 	assert.Equal(t, 75.5, params["battery.level"], "Battery level should match")
 	assert.Equal(t, 230.0, params["ac.voltage"], "AC voltage should match")
 	assert.Equal(t, 3.8, params["dc.current"], "DC current should match")
+}
+
+// TestMessageHandler_ProtobufNestedPdata tests protobuf pdata sent by Delta 3 / STREAM devices
+func TestMessageHandler_ProtobufNestedPdata(t *testing.T) {
+	handler := &MockMetricHandler{}
+
+	exporter := &MqttMetricsExporter{
+		devices:         map[string]string{"DELTA3": "Delta3"},
+		handlers:        []MetricHandler{handler},
+		deviceState:     make(map[string]map[string]interface{}),
+		protobufDecoder: protobuf.NewProtobufDecoder(),
+	}
+
+	// Display property upload captured from a Delta 3 (issue #26)
+	pdata, err := hex.DecodeString("1d00006b432500006b43b50300006b43851700006bc3")
+	require.NoError(t, err)
+
+	payload, err := proto.Marshal(&protobuf.HeaderMessage{
+		Header: []*protobuf.Header{{Pdata: pdata, Src: 2, Dest: 32, CmdFunc: 254, CmdId: 21}},
+	})
+	require.NoError(t, err)
+
+	exporter.MessageHandler(nil, &mockMQTTMessage{
+		topic:   "/app/device/property/DELTA3",
+		payload: payload,
+	})
+	time.Sleep(100 * time.Millisecond)
+
+	assert.Equal(t, 1, handler.GetReceivedCount(), "Handler should be called once")
+	params := handler.GetLastParams()
+	require.NotNil(t, params)
+
+	assert.Equal(t, 235.0, params["powInSumW"])
+	assert.Equal(t, 235.0, params["powOutSumW"])
+	assert.Equal(t, -235.0, params["powGetAcOut"])
 }
 
 // TestMessageHandler_ProtobufWithEncryption tests protobuf with XOR encryption

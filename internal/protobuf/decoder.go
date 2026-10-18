@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -159,9 +160,9 @@ func (d *ProtobufDecoder) DecodeProtobufMessage(payload []byte) (map[string]inte
 				"enc_type", header.EncType)
 		}
 
-		// 3. Get pdata and decrypt if necessary
+		// 3. Get pdata and decrypt if necessary (messages from src=32 are never XOR-encrypted)
 		pdata := header.Pdata
-		if header.EncType == 1 && header.Seq != 0 {
+		if header.EncType == 1 && header.Seq != 0 && header.Src != 32 {
 			encryptedCount++
 			pdata = xorDecrypt(pdata, header.Seq)
 
@@ -178,10 +179,10 @@ func (d *ProtobufDecoder) DecodeProtobufMessage(payload []byte) (map[string]inte
 			}
 		}
 
-		// 4. Parse pdata as JSON (most common case)
+		// 4. Parse pdata as JSON (older devices) or as a nested protobuf message selected by cmd_func/cmd_id
 		var pdataParams map[string]interface{}
-		if err := json.Unmarshal(pdata, &pdataParams); err == nil {
-			// Successfully parsed as JSON - merge into params
+		trimmed := bytes.TrimSpace(pdata)
+		if len(trimmed) > 0 && trimmed[0] == '{' && json.Unmarshal(trimmed, &pdataParams) == nil {
 			parsedCount++
 
 			if debugEnabled {
@@ -193,14 +194,32 @@ func (d *ProtobufDecoder) DecodeProtobufMessage(payload []byte) (map[string]inte
 					"param_count", len(pdataParams),
 					"params_json", string(jsonBytes))
 			}
-
-			for k, v := range pdataParams {
-				params[k] = v
-			}
 		} else {
-			// Unknown pdata format - log for debugging
-			failedCount++
-			d.logUnknownCommand(header.CmdFunc, header.CmdId, pdata, err)
+			var unknownFields []protowire.Number
+			var supported bool
+			var err error
+			pdataParams, unknownFields, supported, err = decodeProtobufPdata(header.CmdFunc, header.CmdId, pdata)
+			if !supported || err != nil {
+				failedCount++
+				d.logUnknownCommand(header.CmdFunc, header.CmdId, pdata, err)
+				continue
+			}
+			parsedCount++
+
+			if debugEnabled {
+				jsonBytes, _ := json.MarshalIndent(pdataParams, "", "  ")
+				slog.Info("[PROTOBUF_DEBUG] Parsed pdata as protobuf",
+					"header_index", i,
+					"cmd_func", header.CmdFunc,
+					"cmd_id", header.CmdId,
+					"param_count", len(pdataParams),
+					"unknown_field_numbers", fmt.Sprint(unknownFields),
+					"params_json", string(jsonBytes))
+			}
+		}
+
+		for k, v := range pdataParams {
+			params[k] = v
 		}
 	}
 
@@ -215,11 +234,16 @@ func (d *ProtobufDecoder) DecodeProtobufMessage(payload []byte) (map[string]inte
 			"all_params_json", string(jsonBytes))
 	}
 
-	if len(params) == 0 {
-		slog.Error("No params extracted from protobuf message",
+	// Known messages may legitimately carry no fields (sparse updates); only fail if nothing could be decoded
+	if parsedCount == 0 {
+		logArgs := []interface{}{
 			"headers_total", len(headerMsg.Header),
 			"headers_failed", failedCount,
-			"help", "Enable PROTOBUF_DEBUG=true to see full message details")
+		}
+		if !debugEnabled {
+			logArgs = append(logArgs, "help", "Enable PROTOBUF_DEBUG=true to see full message details")
+		}
+		slog.Warn("No params extracted from protobuf message", logArgs...)
 		return nil, fmt.Errorf("no params extracted from protobuf message")
 	}
 
@@ -257,20 +281,25 @@ func (d *ProtobufDecoder) logUnknownCommand(cmdFunc, cmdId int32, pdata []byte, 
 			"cmd_func", cmdFunc,
 			"cmd_id", cmdId,
 			"pdata_len", len(pdata),
-			"parse_error", parseErr.Error(),
 			"pdata_hex_preview", hex.EncodeToString(pdata[:previewLen]),
 			"pdata_ascii_preview", formatAscii(pdata[:previewLen]),
-			"help", "Enable PROTOBUF_DEBUG=true and report to https://github.com/tess1o/go-ecoflow-exporter/issues",
+		}
+		if parseErr != nil {
+			logArgs = append(logArgs, "parse_error", parseErr.Error())
 		}
 
 		// If debug enabled, include FULL pdata dump
 		if debugEnabled {
 			logArgs = append(logArgs,
 				"pdata_hex_full", hex.EncodeToString(pdata),
-				"pdata_ascii_full", formatAscii(pdata))
+				"pdata_ascii_full", formatAscii(pdata),
+				"help", "Please report to https://github.com/tess1o/go-ecoflow-exporter/issues")
+		} else {
+			logArgs = append(logArgs,
+				"help", "Enable PROTOBUF_DEBUG=true and report to https://github.com/tess1o/go-ecoflow-exporter/issues")
 		}
 
-		slog.Info("Unknown protobuf pdata format - cannot parse as JSON", logArgs...)
+		slog.Info("Unsupported protobuf command - cannot decode pdata", logArgs...)
 	}
 
 	// Log at WARN if seen frequently (every 100 occurrences)
