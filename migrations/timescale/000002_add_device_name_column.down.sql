@@ -1,1 +1,0 @@
-alter table ecoflow_metrics drop column if exists device_name;

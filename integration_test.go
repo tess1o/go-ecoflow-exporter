@@ -279,12 +279,15 @@ func TestIntegration_DeviceOffline_Prometheus(t *testing.T) {
 	handle(context.Background(), promExporter, device, map[string]interface{}{})
 	time.Sleep(200 * time.Millisecond)
 
-	// Verify metrics still exist (set to 0, not deleted)
+	// Verify only the online series is left
 	promExporter.mu.RLock()
 	offlineMetricCount := len(promExporter.metrics)
+	online := promExporter.metrics["INTEG_OFF_integ_offline_online"]
 	promExporter.mu.RUnlock()
 
-	assert.Equal(t, initialMetricCount, offlineMetricCount, "Metrics should still exist when offline")
+	assert.Equal(t, 1, offlineMetricCount, "Only the online series should exist when offline")
+	require.NotNil(t, online)
+	assert.Equal(t, 0.0, online.value)
 
 	t.Log("✅ SUCCESS: Offline devices correctly handled")
 }

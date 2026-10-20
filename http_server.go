@@ -11,9 +11,7 @@ import (
 	"time"
 )
 
-var _ Shutdownable = (*HTTPServer)(nil)
-
-// HTTPServer serves /healthz and, when Prometheus is enabled, /metrics
+// HTTPServer serves /metrics and /healthz
 type HTTPServer struct {
 	server *http.Server
 
@@ -21,13 +19,11 @@ type HTTPServer struct {
 	health   func() error
 }
 
-// NewHTTPServer starts listening on port. metrics is mounted on /metrics unless it is nil.
+// NewHTTPServer starts listening on port and serves metrics on /metrics
 func NewHTTPServer(port string, metrics http.Handler) (*HTTPServer, error) {
 	s := &HTTPServer{}
 	mux := http.NewServeMux()
-	if metrics != nil {
-		mux.Handle("/metrics", metrics)
-	}
+	mux.Handle("/metrics", metrics)
 	mux.HandleFunc("/healthz", s.serveHealth)
 
 	listener, err := net.Listen("tcp", ":"+port)

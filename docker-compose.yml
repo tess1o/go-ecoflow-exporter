@@ -1,0 +1,32 @@
+# EcoFlow Prometheus exporter. Fill in the credentials of ONE of the two modes below, then run:
+#   docker compose up -d
+# Metrics: http://localhost:2112/metrics, health: http://localhost:2112/healthz
+services:
+  ecoflow_exporter:
+    image: tess1o/go-ecoflow-exporter:2
+    container_name: ecoflow_exporter
+    restart: unless-stopped
+    ports:
+      - "2112:2112"
+    environment:
+      # --- MQTT mode (recommended): the email and password of your EcoFlow app account ---
+      ECOFLOW_EMAIL: ""
+      ECOFLOW_PASSWORD: ""
+      # serial numbers of the devices, separated by commas (required in MQTT mode)
+      ECOFLOW_DEVICES: ""
+
+      # --- REST API mode: keys from https://developer-eu.ecoflow.com (all linked devices are exported) ---
+      # ECOFLOW_ACCESS_KEY: ""
+      # ECOFLOW_SECRET_KEY: ""
+
+      # --- Optional, the values shown are the defaults ---
+      # display names for the "device" label, JSON: {"SERIAL_NUMBER":"Name"}
+      # ECOFLOW_DEVICES_PRETTY_NAMES: '{"R33XXXXXXXXX":"My Delta 2"}'
+      # mqtt or rest; chosen from the credentials above when not set
+      # EXPORTER_TYPE: ""
+      # METRIC_PREFIX: "ecoflow"
+      # MQTT_DEVICE_OFFLINE_THRESHOLD_SECONDS: "300"
+      # SCRAPING_INTERVAL: "30"
+      # LOG_LEVEL: "info"
+      # LOG_FORMAT: "text"
+      # TZ: "Europe/Kyiv"

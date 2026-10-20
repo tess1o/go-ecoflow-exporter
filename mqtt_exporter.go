@@ -42,7 +42,6 @@ type MqttMetricsExporter struct {
 	devices              map[string]string
 	handlers             []MetricHandler
 	offlineThreshold     time.Duration
-	userId               string
 	pingInterval         time.Duration
 	stateRefreshInterval time.Duration
 	deviceState          map[string]map[string]any // SN -> full device state
@@ -50,11 +49,18 @@ type MqttMetricsExporter struct {
 	protobufDecoder      *protobuf.ProtobufDecoder // Persists to track seen devices
 	telemetry            *Telemetry
 
-	statusMu       sync.Mutex
-	lastReceived   map[string]time.Time // SN -> time of the last message
-	offlineSent    map[string]time.Time // SN -> time of the last offline update, present while the device is offline
-	reconnectDelay time.Duration        // grows while forced reconnects do not bring data back
-	nextReconnect  time.Time
+	userMu sync.RWMutex
+	userId string // set by every login, used in the topics of the requests sent to devices
+
+	// relogin asks Run to drop the client and log in again for fresh broker credentials
+	relogin chan struct{}
+
+	statusMu            sync.Mutex
+	lastReceived        map[string]time.Time // SN -> time of the last message
+	offlineSent         map[string]time.Time // SN -> time of the last offline update, present while the device is offline
+	reconnectDelay      time.Duration        // grows while forced reconnects do not bring data back
+	nextReconnect       time.Time
+	fruitlessReconnects int // forced reconnects since the last message from any device
 
 	pingMu     sync.Mutex
 	pingOK     map[string]int // SN -> successful keepalive pings
@@ -65,6 +71,8 @@ const (
 	maxReconnectDelay = 10 * time.Minute
 	loginRetryDelay   = 5 * time.Second
 	maxLoginDelay     = 5 * time.Minute
+	// reloginAfterReconnects is how many forced reconnects without data are tried before logging in again
+	reloginAfterReconnects = 3
 )
 
 func NewMqttMetricsExporter(cfg MqttExporterConfig, handlers ...MetricHandler) (*MqttMetricsExporter, error) {
@@ -103,6 +111,7 @@ func NewMqttMetricsExporter(cfg MqttExporterConfig, handlers ...MetricHandler) (
 		deviceState:          make(map[string]map[string]any),
 		protobufDecoder:      protobuf.NewProtobufDecoder(cfg.ProtobufDebug),
 		telemetry:            cfg.Telemetry,
+		relogin:              make(chan struct{}, 1),
 	}, nil
 }
 
@@ -112,7 +121,9 @@ func (m *MqttMetricsExporter) login(ctx context.Context) (*ecoflow.MqttClient, e
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user ID: %w", err)
 	}
+	m.userMu.Lock()
 	m.userId = userId
+	m.userMu.Unlock()
 	configuration := ecoflow.MqttClientConfiguration{
 		Email:            m.email,
 		Password:         m.password,
@@ -123,9 +134,32 @@ func (m *MqttMetricsExporter) login(ctx context.Context) (*ecoflow.MqttClient, e
 	return ecoflow.NewMqttClient(ctx, configuration)
 }
 
-// Run logs in, connects to the broker and keeps devices reporting until ctx is cancelled.
-// Login is retried, so a temporary EcoFlow outage at startup does not stop the exporter.
+// Run keeps devices reporting until ctx is cancelled. Every session logs in (retried, so an EcoFlow outage
+// does not stop the exporter), connects to the broker and lasts until a re-login is requested: the broker
+// credentials from the login are then replaced, in case they are no longer accepted.
 func (m *MqttMetricsExporter) Run(ctx context.Context) error {
+	go m.monitorDeviceStatus(ctx)
+	go m.pingRoutine(ctx)
+
+	for {
+		if err := m.runSession(ctx); err != nil {
+			slog.Error("MQTT session failed", "error", err)
+		}
+		if ctx.Err() != nil {
+			return nil
+		}
+		m.telemetry.MqttRelogin()
+		slog.Warn("Logging in to EcoFlow again to get fresh MQTT broker credentials")
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(loginRetryDelay):
+		}
+	}
+}
+
+// runSession logs in and stays connected until ctx is cancelled or a re-login is requested
+func (m *MqttMetricsExporter) runSession(ctx context.Context) error {
 	var client *ecoflow.MqttClient
 	err := retryWithBackoff(ctx, "log in to EcoFlow", 0, loginRetryDelay, maxLoginDelay, func() error {
 		var err error
@@ -139,7 +173,12 @@ func (m *MqttMetricsExporter) Run(ctx context.Context) error {
 		return err
 	}
 	m.client.Store(client)
+	defer func() {
+		client.Client.Disconnect(250)
+		m.telemetry.SetMqttConnected(false)
+	}()
 
+	// the client retries the connection by itself, the token completes once it is connected
 	token := client.Client.Connect()
 	select {
 	case <-token.Done():
@@ -147,21 +186,39 @@ func (m *MqttMetricsExporter) Run(ctx context.Context) error {
 			return fmt.Errorf("unable to connect to MQTT broker: %w", err)
 		}
 	case <-ctx.Done():
-		client.Client.Disconnect(250)
+		return nil
+	case <-m.relogin:
 		return nil
 	}
 
-	go m.monitorDeviceStatus(ctx)
-	go m.pingRoutine(ctx)
-	slog.Info("Started RTC time ping routine to keep devices active")
-
-	<-ctx.Done()
-	client.Client.Disconnect(250)
-	m.telemetry.SetMqttConnected(false)
+	select {
+	case <-ctx.Done():
+	case <-m.relogin:
+	}
 	return nil
 }
 
-// mqtt returns the MQTT client, it must only be called once Run has logged in
+// requestRelogin asks Run to log in again. It does not block, a pending request is enough.
+func (m *MqttMetricsExporter) requestRelogin() {
+	select {
+	case m.relogin <- struct{}{}:
+	default:
+	}
+}
+
+func (m *MqttMetricsExporter) currentUserId() string {
+	m.userMu.RLock()
+	defer m.userMu.RUnlock()
+	return m.userId
+}
+
+// connected reports whether there is a client and it is connected to the broker
+func (m *MqttMetricsExporter) connected() bool {
+	c := m.mqtt()
+	return c != nil && c.Client.IsConnected()
+}
+
+// mqtt returns the MQTT client of the current session, nil until the first login
 func (m *MqttMetricsExporter) mqtt() *ecoflow.MqttClient {
 	return m.client.Load()
 }
@@ -189,6 +246,7 @@ func (m *MqttMetricsExporter) markReceived(sn string) (wasOffline bool) {
 	m.lastReceived[sn] = time.Now()
 	m.reconnectDelay = 0
 	m.nextReconnect = time.Time{}
+	m.fruitlessReconnects = 0
 	_, wasOffline = m.offlineSent[sn]
 	delete(m.offlineSent, sn)
 	return wasOffline
@@ -343,7 +401,7 @@ func (m *MqttMetricsExporter) monitorDeviceStatus(ctx context.Context) {
 			return
 		case <-ticker.C:
 		}
-		if !m.mqtt().Client.IsConnected() {
+		if !m.connected() {
 			slog.Debug("MQTT client is not connected to the broker, we don't know the devices statuses...")
 			continue
 		}
@@ -355,9 +413,14 @@ func (m *MqttMetricsExporter) monitorDeviceStatus(ctx context.Context) {
 		}
 
 		// If true it means that either all devices are offline or we don't receive any messages from MQTT broker.
-		// Either way we need to reconnect the client
+		// Either way we need to reconnect the client, and log in again when reconnecting does not help
 		if len(offline) > 0 && len(offline) == len(m.devices) && m.reconnectDue() {
-			m.forceReconnect(ctx)
+			if m.reloginDue() {
+				slog.Error("Reconnecting did not bring any data back, logging in again", "reconnects", reloginAfterReconnects)
+				m.requestRelogin()
+			} else {
+				m.forceReconnect(ctx)
+			}
 		}
 	}
 }
@@ -409,10 +472,24 @@ func (m *MqttMetricsExporter) reconnectDue() bool {
 	return true
 }
 
+// reloginDue counts a forced reconnect and reports whether enough of them were tried without any data,
+// so that a re-login should be done instead
+func (m *MqttMetricsExporter) reloginDue() bool {
+	m.statusMu.Lock()
+	defer m.statusMu.Unlock()
+	m.fruitlessReconnects++
+	if m.fruitlessReconnects >= reloginAfterReconnects {
+		m.fruitlessReconnects = 0
+		return true
+	}
+	return false
+}
+
 func (m *MqttMetricsExporter) forceReconnect(ctx context.Context) {
 	slog.Error("All devices are either offline or we don't receive messages from MQTT topic, we'll try to reconnect")
 	m.telemetry.MqttForcedReconnect()
-	m.mqtt().Client.Disconnect(250)
+	c := m.mqtt()
+	c.Client.Disconnect(250)
 	m.telemetry.SetMqttConnected(false)
 
 	select {
@@ -421,7 +498,7 @@ func (m *MqttMetricsExporter) forceReconnect(ctx context.Context) {
 	case <-time.After(5 * time.Second):
 	}
 
-	token := m.mqtt().Client.Connect()
+	token := c.Client.Connect()
 	select {
 	case <-ctx.Done():
 	case <-token.Done():
@@ -548,8 +625,12 @@ func (m *MqttMetricsExporter) requestLatestQuotas(sn string) error {
 		return fmt.Errorf("failed to marshal latestQuotas message: %w", err)
 	}
 
-	topic := fmt.Sprintf("/app/%s/%s/thing/property/get", m.userId, sn)
-	token := m.mqtt().Client.Publish(topic, 1, false, payload)
+	c := m.mqtt()
+	if c == nil {
+		return errors.New("not logged in to EcoFlow yet")
+	}
+	topic := fmt.Sprintf("/app/%s/%s/thing/property/get", m.currentUserId(), sn)
+	token := c.Client.Publish(topic, 1, false, payload)
 
 	// Wait with timeout
 	if !token.WaitTimeout(5 * time.Second) {
@@ -593,8 +674,14 @@ func (m *MqttMetricsExporter) sendRtcTimePing(sn string) error {
 		return err
 	}
 
-	topic := fmt.Sprintf("/app/%s/%s/thing/property/set", m.userId, sn)
-	token := m.mqtt().Client.Publish(topic, 1, false, payload)
+	c := m.mqtt()
+	if c == nil {
+		err = errors.New("not logged in to EcoFlow yet")
+		m.recordPing(sn, err)
+		return err
+	}
+	topic := fmt.Sprintf("/app/%s/%s/thing/property/set", m.currentUserId(), sn)
+	token := c.Client.Publish(topic, 1, false, payload)
 
 	// Wait with timeout
 	if !token.WaitTimeout(5 * time.Second) {
@@ -652,7 +739,7 @@ func (m *MqttMetricsExporter) pingRoutine(ctx context.Context) {
 			return
 		case <-ticker.C:
 		}
-		if !m.mqtt().Client.IsConnected() {
+		if !m.connected() {
 			slog.Debug("MQTT client not connected, skipping ping")
 			continue
 		}

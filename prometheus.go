@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
-	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -20,9 +19,6 @@ var _ prometheus.Collector = (*PrometheusExporter)(nil)
 type PrometheusConfig struct {
 	// Prefix represents the metric prefix to be used when recording Prometheus metrics. It's a good idea to use value "ecoflow"
 	Prefix string
-	// MetricTTL drops device series that were not updated for this long. Zero keeps them forever.
-	// The "online" series is refreshed by every update (including offline ones), so it never expires.
-	MetricTTL time.Duration
 	// Gatherer provides the non-device metrics served on /metrics (Go runtime, exporter telemetry).
 	// Defaults to prometheus.DefaultGatherer.
 	Gatherer prometheus.Gatherer
@@ -30,15 +26,16 @@ type PrometheusConfig struct {
 
 // promSample is the latest value of one device parameter
 type promSample struct {
-	sn      string
-	device  string
-	name    string
-	value   float64
-	updated time.Time
+	sn     string
+	device string
+	name   string
+	value  float64
 }
 
 // PrometheusExporter keeps the latest value of every device parameter and exposes them as gauges
-// named "<prefix>_<parameter>" with "device" and "serial_number" labels.
+// named "<prefix>_<parameter>" with "device" and "serial_number" labels. When a device goes offline its
+// series are removed (so charts show a gap and alerts do not see stale or zero values), only
+// "<prefix>_online" stays and reports 0.
 type PrometheusExporter struct {
 	Config *PrometheusConfig
 
@@ -92,12 +89,17 @@ func (p *PrometheusExporter) Handle(_ context.Context, u *DeviceUpdate) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	onlineName, _, _ := generateMetricName("online", p.Config.Prefix, device.SN)
 	if device.Online == 0 {
-		slog.Info("Device is offline. Setting all metrics to 0", "SN", device.SN, "device name", device.Name)
-		for _, s := range p.metrics {
-			if s.sn == device.SN {
-				s.value = 0
+		dropped := 0
+		for key, s := range p.metrics {
+			if s.sn == device.SN && s.name != onlineName {
+				delete(p.metrics, key)
+				dropped++
 			}
+		}
+		if dropped > 0 {
+			slog.Info("Device is offline, its metrics are removed until it reports again", "SN", device.SN, "device name", device.Name)
 		}
 	} else {
 		for _, s := range samples {
@@ -105,16 +107,15 @@ func (p *PrometheusExporter) Handle(_ context.Context, u *DeviceUpdate) error {
 				slog.Debug("The value is not a number, skipping it", "metric", s.Param, "device", device.SN)
 				continue
 			}
-			p.setLocked(device, s.Param, s.Name, s.Value, u.Time)
+			p.setLocked(device, s.Param, s.Name, s.Value)
 		}
 	}
 	// online is always reported, also for devices that were never seen online
-	onlineName, _, _ := generateMetricName("online", p.Config.Prefix, device.SN)
-	p.setLocked(device, "online", onlineName, float64(device.Online), u.Time)
+	p.setLocked(device, "online", onlineName, float64(device.Online))
 	return nil
 }
 
-func (p *PrometheusExporter) setLocked(device EcoflowDevice, param, metricName string, value float64, updated time.Time) {
+func (p *PrometheusExporter) setLocked(device EcoflowDevice, param, metricName string, value float64) {
 	deviceMetricName := device.SN + "_" + metricName
 	s, ok := p.metrics[deviceMetricName]
 	if !ok {
@@ -128,7 +129,6 @@ func (p *PrometheusExporter) setLocked(device EcoflowDevice, param, metricName s
 		p.metrics[deviceMetricName] = s
 	}
 	s.value = value
-	s.updated = updated
 }
 
 // Describe sends no descriptors: the set of metrics depends on what devices report,
@@ -136,8 +136,6 @@ func (p *PrometheusExporter) setLocked(device EcoflowDevice, param, metricName s
 func (p *PrometheusExporter) Describe(chan<- *prometheus.Desc) {}
 
 func (p *PrometheusExporter) Collect(ch chan<- prometheus.Metric) {
-	p.pruneExpired()
-
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	for _, s := range p.metrics {
@@ -147,21 +145,5 @@ func (p *PrometheusExporter) Collect(ch chan<- prometheus.Metric) {
 			m = prometheus.NewInvalidMetric(desc, err)
 		}
 		ch <- m
-	}
-}
-
-func (p *PrometheusExporter) pruneExpired() {
-	if p.Config.MetricTTL <= 0 {
-		return
-	}
-	deadline := time.Now().Add(-p.Config.MetricTTL)
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	for key, s := range p.metrics {
-		if s.updated.Before(deadline) {
-			slog.Debug("Dropping stale metric", "metric", s.name, "device", s.sn)
-			delete(p.metrics, key)
-		}
 	}
 }

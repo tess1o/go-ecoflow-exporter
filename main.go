@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -15,7 +14,16 @@ import (
 	"github.com/tess1o/go-ecoflow"
 )
 
-const shutdownTimeout = 10 * time.Second
+const (
+	shutdownTimeout = 10 * time.Second
+	// unhealthyExitAfter stops the exporter when it cannot recover by itself, so that the container is
+	// restarted (Docker restarts stopped containers, but not running unhealthy ones)
+	unhealthyExitAfter = 30 * time.Minute
+	watchdogInterval   = time.Minute
+)
+
+// version is set at build time with -ldflags "-X main.version=..."
+var version = "dev"
 
 // Exporter collects device parameters and passes them to the metric handlers
 type Exporter interface {
@@ -39,150 +47,87 @@ func main() {
 }
 
 func run() error {
-	slog.Info("Starting the exporter...")
+	slog.Info("Starting the exporter...", "version", version)
 	cfg, err := LoadConfig(nil)
 	if err != nil {
 		return err
 	}
+	slog.Info("Configuration", "config", cfg)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	var telemetry *Telemetry
-	if cfg.Prometheus.Enabled {
-		telemetry = NewTelemetry(cfg.MetricPrefix, prometheus.DefaultRegisterer)
+	telemetry := NewTelemetry(cfg.MetricPrefix, version, prometheus.DefaultRegisterer)
+	prom, err := NewPrometheusExporter(&PrometheusConfig{Prefix: cfg.MetricPrefix})
+	if err != nil {
+		return fmt.Errorf("unable to create prometheus exporter: %w", err)
 	}
 
-	handlers, prom, err := createHandlers(ctx, cfg, telemetry)
-	defer closeHandlers(handlers)
+	exporter, err := createExporter(cfg, telemetry, prom)
 	if err != nil {
 		return err
 	}
 
-	server, err := startHTTPServer(cfg, prom)
+	server, err := NewHTTPServer(cfg.Port, prom.Handler())
 	if err != nil {
 		return err
 	}
-	if server != nil {
-		defer closeWithTimeout(server)
-	}
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		server.Close(closeCtx)
+	}()
+	server.SetHealthCheck(exporter.Health)
 
-	exporter, err := createExporter(cfg, telemetry, handlers)
-	if err != nil {
-		return err
-	}
-	if server != nil {
-		server.SetHealthCheck(func() error { return health(exporter, handlers) })
-	}
+	runCtx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	go func() {
+		if err := watchdog(runCtx, exporter.Health, unhealthyExitAfter, watchdogInterval); err != nil {
+			cancel(err)
+		}
+	}()
 
-	err = exporter.Run(ctx)
+	err = exporter.Run(runCtx)
 	if ctx.Err() != nil {
 		slog.Info("Received shutdown signal")
+		return err
+	}
+	if cause := context.Cause(runCtx); cause != nil {
+		return cause
 	}
 	return err
 }
 
-// startHTTPServer serves /healthz, and /metrics when Prometheus is enabled. Without Prometheus the server
-// only provides the health check, so a busy port is reported but does not stop the exporter.
-func startHTTPServer(cfg *Config, prom *PrometheusExporter) (*HTTPServer, error) {
-	var metrics http.Handler
-	if prom != nil {
-		metrics = prom.Handler()
-	}
-	server, err := NewHTTPServer(cfg.Prometheus.Port, metrics)
-	if err != nil {
-		if cfg.Prometheus.Enabled {
-			return nil, fmt.Errorf("unable to start prometheus exporter: %w", err)
+// watchdog checks the health every interval and returns an error once it has been failing for longer than limit.
+// It returns nil when ctx is cancelled.
+func watchdog(ctx context.Context, check func() error, limit, interval time.Duration) error {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	var failingSince time.Time
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
 		}
-		slog.Warn("Unable to start the health check server", "error", err)
-		return nil, nil
-	}
-	return server, nil
-}
-
-// health combines the health of the exporter and the metric handlers
-func health(exporter Exporter, handlers []MetricHandler) error {
-	errs := []error{exporter.Health()}
-	for _, h := range handlers {
-		if c, ok := h.(HealthChecker); ok {
-			errs = append(errs, c.Health())
-		}
-	}
-	return errors.Join(errs...)
-}
-
-// createHandlers creates the enabled metric handlers, each behind its own queue
-func createHandlers(ctx context.Context, cfg *Config, telemetry *Telemetry) ([]MetricHandler, *PrometheusExporter, error) {
-	var handlers []MetricHandler
-	queue := func(name string, h MetricHandler, minWriteInterval time.Duration) {
-		var handler MetricHandler = NewQueuedHandler(name, h, QueueOptions{
-			Size:           cfg.HandlerQueueSize,
-			Timeout:        cfg.HandlerTimeout,
-			Telemetry:      telemetry,
-			UnhealthyAfter: cfg.HandlerUnhealthyAfter,
-		})
-		if minWriteInterval > 0 {
-			slog.Info("Writes are throttled", "handler", name, "min_write_interval", minWriteInterval.String())
-			handler = NewThrottledHandler(handler, minWriteInterval)
-		}
-		handlers = append(handlers, handler)
-	}
-
-	var prom *PrometheusExporter
-	if cfg.Prometheus.Enabled {
-		var err error
-		prom, err = NewPrometheusExporter(&PrometheusConfig{
-			Prefix:    cfg.MetricPrefix,
-			MetricTTL: cfg.Prometheus.MetricTTL,
-		})
-		if err != nil {
-			return handlers, nil, fmt.Errorf("unable to start prometheus exporter: %w", err)
-		}
-		queue("prometheus", prom, 0)
-	}
-
-	if cfg.Timescale.Enabled {
-		timescale, err := NewTimescaleExporter(ctx, &TimescaleExporterConfig{
-			Prefix:             cfg.MetricPrefix,
-			TimescaleUrl:       cfg.Timescale.Url,
-			MigrationSourceUrl: cfg.Timescale.MigrationsUrl,
-			CompressionAfter:   cfg.Timescale.CompressionAfter,
-			Retention:          cfg.Timescale.Retention,
-		})
-		if err != nil {
-			return handlers, prom, fmt.Errorf("unable to start timescale exporter: %w", err)
-		}
-		queue("timescale", timescale, cfg.Timescale.MinWriteInterval)
-	}
-
-	if cfg.Redis.Enabled {
-		queue("redis", NewRedisExporter(&RedisExporterConfig{
-			Prefix:      cfg.MetricPrefix,
-			RedisConfig: cfg.Redis.Options,
-			Retention:   cfg.Redis.Retention,
-			TimestampMs: cfg.Redis.TimestampMs,
-		}), cfg.Redis.MinWriteInterval)
-	}
-	return handlers, prom, nil
-}
-
-func closeHandlers(handlers []MetricHandler) {
-	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-	defer cancel()
-	for _, h := range handlers {
-		if s, ok := h.(Shutdownable); ok {
-			s.Close(ctx)
+		err := check()
+		switch {
+		case err == nil:
+			if !failingSince.IsZero() {
+				slog.Info("Exporter is healthy again")
+			}
+			failingSince = time.Time{}
+		case failingSince.IsZero():
+			failingSince = time.Now()
+			slog.Warn("Exporter is unhealthy", "error", err, "exit_after", limit)
+		case time.Since(failingSince) > limit:
+			return fmt.Errorf("unhealthy for %s, stopping so that the exporter is restarted: %w",
+				time.Since(failingSince).Round(time.Second), err)
 		}
 	}
 }
 
-func closeWithTimeout(s Shutdownable) {
-	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-	defer cancel()
-	s.Close(ctx)
-}
-
-func createExporter(cfg *Config, telemetry *Telemetry, handlers []MetricHandler) (Exporter, error) {
+func createExporter(cfg *Config, telemetry *Telemetry, handlers ...MetricHandler) (Exporter, error) {
 	switch cfg.ExporterType {
 	case "mqtt":
 		exporter, err := NewMqttMetricsExporter(MqttExporterConfig{
@@ -198,10 +143,6 @@ func createExporter(cfg *Config, telemetry *Telemetry, handlers []MetricHandler)
 		if err != nil {
 			return nil, fmt.Errorf("unable to start mqtt exporter: %w", err)
 		}
-		slog.Info("MQTT exporter configuration",
-			"offline_threshold", cfg.Mqtt.OfflineThreshold,
-			"ping_interval", cfg.Mqtt.PingInterval,
-			"state_refresh_interval", cfg.Mqtt.StateRefreshInterval)
 		return exporter, nil
 	default:
 		client := ecoflow.NewEcoflowClient(cfg.Rest.AccessKey, cfg.Rest.SecretKey,
@@ -214,16 +155,12 @@ func createExporter(cfg *Config, telemetry *Telemetry, handlers []MetricHandler)
 	}
 }
 
-// runHealthcheck is used by the Docker HEALTHCHECK and queries /healthz. Without Prometheus the health
-// server is optional: when nothing listens, there is nothing to ask and the check succeeds.
+// runHealthcheck is used by the Docker HEALTHCHECK and queries /healthz
 func runHealthcheck() int {
 	e := newEnv(nil)
 	client := http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get("http://127.0.0.1:" + e.str("PROMETHEUS_PORT", defaultMetricsPort) + "/healthz")
+	resp, err := client.Get("http://127.0.0.1:" + e.str("PROMETHEUS_PORT", defaultPort) + "/healthz")
 	if err != nil {
-		if !e.bool("PROMETHEUS_ENABLED") && errors.Is(err, syscall.ECONNREFUSED) {
-			return 0
-		}
 		fmt.Fprintln(os.Stderr, "healthcheck failed:", err)
 		return 1
 	}

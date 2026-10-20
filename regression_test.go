@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tess1o/go-ecoflow"
@@ -30,40 +29,22 @@ func scrape(t *testing.T, port string) string {
 	return string(body)
 }
 
-// Several handlers used to receive the same map concurrently while Redis/Timescale wrote "online" into it,
-// which can crash the process with "concurrent map read and map write". Run with -race.
+// Handlers receive the same map concurrently; writing into it (as handlers once did with "online") can crash
+// the process with "concurrent map read and map write". Run with -race.
 func TestHandlersDoNotMutateSharedParams(t *testing.T) {
 	prom := newTestPrometheusExporter(t, &PrometheusConfig{Prefix: "reg_shared"})
-	redisExporter := NewRedisExporter(&RedisExporterConfig{
-		Prefix:      "reg_shared",
-		RedisConfig: &redis.Options{Addr: "127.0.0.1:1", MaxRetries: -1, DialTimeout: 50 * time.Millisecond},
-	})
-	defer redisExporter.Close(context.Background())
 
 	params := map[string]any{"battery.level": 50.0, "ac.voltage": 230.0}
 	device := EcoflowDevice{SN: "REGSHARED", Name: "dev", Online: 1}
 
 	var wg sync.WaitGroup
-	for range 4 {
+	for range 8 {
 		wg.Go(func() { handle(context.Background(), prom, device, params) })
-		wg.Go(func() { handle(context.Background(), redisExporter, device, params) })
-		wg.Go(func() { timescaleMetrics("reg_shared", NewDeviceUpdate(device, params)) })
 	}
 	wg.Wait()
 
 	assert.Len(t, params, 2)
 	assert.NotContains(t, params, "online")
-}
-
-func TestTimescaleMetrics(t *testing.T) {
-	params := map[string]any{"pd.wireUsedTime": 1.0, "list": []any{1.0}, "name": "abc", "online": 1.0}
-	got := timescaleMetrics("ecoflow", NewDeviceUpdate(EcoflowDevice{SN: "SN", Online: 0}, params))
-	assert.Equal(t, map[string]any{
-		"ecoflow_pd_wire_used_time": 1.0,
-		"ecoflow_name":              "abc",
-		"ecoflow_online":            0.0, // the device status wins over a reported "online" parameter
-	}, got)
-	assert.Len(t, params, 4, "input must not be modified")
 }
 
 func TestMetricNames(t *testing.T) {
@@ -138,30 +119,15 @@ func TestPrometheusOfflineDevice(t *testing.T) {
 	handle(ctx, prom, EcoflowDevice{SN: "NEVER", Name: "c", Online: 0}, nil)
 
 	body := scrape(t, "29974")
-	assert.Contains(t, body, `reg_off_soc{device="a",serial_number="OFF1"} 0`)
+	assert.NotContains(t, body, `reg_off_soc{device="a",serial_number="OFF1"}`, "series of an offline device are removed")
 	assert.Contains(t, body, `reg_off_online{device="a",serial_number="OFF1"} 0`)
 	// "OFF1" is a substring of "OFF10", which must not be affected
 	assert.Contains(t, body, `reg_off_soc{device="b",serial_number="OFF10"} 70`)
 	assert.Contains(t, body, `reg_off_online{device="c",serial_number="NEVER"} 0`)
 }
 
-func TestPrometheusMetricTTL(t *testing.T) {
-	prom := newTestPrometheusExporter(t, &PrometheusConfig{Prefix: "reg_ttl", MetricTTL: time.Hour})
-	servePrometheus(t, prom, "29975")
-
-	device := EcoflowDevice{SN: "TTL", Name: "dev", Online: 1}
-	handle(context.Background(), prom, device, map[string]any{"old": 1.0, "fresh": 2.0})
-	prom.mu.Lock()
-	prom.metrics["TTL_reg_ttl_old"].updated = time.Now().Add(-2 * time.Hour)
-	prom.mu.Unlock()
-
-	body := scrape(t, "29975")
-	assert.NotContains(t, body, "reg_ttl_old{")
-	assert.Contains(t, body, `reg_ttl_fresh{device="dev",serial_number="TTL"} 2`)
-}
-
 func TestHTTPServerHealthz(t *testing.T) {
-	server, err := NewHTTPServer("29976", nil)
+	server, err := NewHTTPServer("29976", http.NotFoundHandler())
 	require.NoError(t, err)
 	defer server.Close(context.Background())
 
@@ -172,22 +138,21 @@ func TestHTTPServerHealthz(t *testing.T) {
 		return resp.StatusCode
 	}
 	assert.Equal(t, http.StatusOK, get("/healthz"))
-	assert.Equal(t, http.StatusNotFound, get("/metrics"), "no /metrics without Prometheus")
 	server.SetHealthCheck(func() error { return errors.New("broken") })
 	assert.Equal(t, http.StatusServiceUnavailable, get("/healthz"))
 }
 
 func TestHTTPServerPortInUse(t *testing.T) {
-	server, err := NewHTTPServer("29977", nil)
+	server, err := NewHTTPServer("29977", http.NotFoundHandler())
 	require.NoError(t, err)
 	defer server.Close(context.Background())
-	_, err = NewHTTPServer("29977", nil)
+	_, err = NewHTTPServer("29977", http.NotFoundHandler())
 	assert.Error(t, err)
 }
 
 func TestTelemetryIsExposed(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	tel := NewTelemetry("reg_tel", reg)
+	tel := NewTelemetry("reg_tel", "1.2.3", reg)
 	prom := newTestPrometheusExporter(t, &PrometheusConfig{Prefix: "reg_tel", Gatherer: reg})
 	servePrometheus(t, prom, "29978")
 
@@ -197,128 +162,12 @@ func TestTelemetryIsExposed(t *testing.T) {
 
 	body := scrape(t, "29978")
 	assert.Contains(t, body, "reg_tel_exporter_mqtt_connected 1")
+	assert.Contains(t, body, `reg_tel_exporter_build_info{version="1.2.3"} 1`)
 	assert.Contains(t, body, `reg_tel_exporter_rest_requests_total{endpoint="device_list",result="success"} 1`)
 	assert.Contains(t, body, `reg_tel_exporter_mqtt_pings_total{result="error",serial_number="SN",type="keepalive"} 1`)
 
 	var nilTelemetry *Telemetry
 	assert.NotPanics(t, func() { nilTelemetry.SetMqttConnected(true) })
-}
-
-type blockingHandler struct {
-	release chan struct{}
-	mu      sync.Mutex
-	got     []float64
-}
-
-func (b *blockingHandler) Handle(_ context.Context, u *DeviceUpdate) error {
-	<-b.release
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.got = append(b.got, u.Params["v"].(float64))
-	return nil
-}
-
-func TestQueuedHandlerKeepsOrderAndDropsWhenFull(t *testing.T) {
-	inner := &blockingHandler{release: make(chan struct{})}
-	q := NewQueuedHandler("test", inner, QueueOptions{Size: 2, Timeout: time.Second})
-
-	device := EcoflowDevice{SN: "Q"}
-	for i := range 10 {
-		handle(context.Background(), q, device, map[string]any{"v": float64(i)})
-		if i == 0 {
-			time.Sleep(50 * time.Millisecond) // let the worker pick up the first update
-		}
-	}
-	close(inner.release)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	q.Close(ctx)
-	// handling after close is ignored and must not panic
-	handle(context.Background(), q, device, map[string]any{"v": 99.0})
-
-	inner.mu.Lock()
-	defer inner.mu.Unlock()
-	assert.Equal(t, []float64{0, 1, 2}, inner.got, "one in progress plus a queue of two, the rest is dropped")
-}
-
-func TestLoadConfig(t *testing.T) {
-	lookup := func(vars map[string]string) func(string) (string, bool) {
-		return func(k string) (string, bool) { v, ok := vars[k]; return v, ok }
-	}
-
-	t.Run("defaults with empty compose variables", func(t *testing.T) {
-		cfg, err := LoadConfig(lookup(map[string]string{
-			"EXPORTER_TYPE":      "",
-			"ECOFLOW_ACCESS_KEY": "a",
-			"ECOFLOW_SECRET_KEY": "s",
-			"PROMETHEUS_ENABLED": "true",
-			"PROMETHEUS_PORT":    "",
-			"SCRAPING_INTERVAL":  "",
-			"ECOFLOW_DEVICES":    " SN1, SN2 ,,",
-		}))
-		require.NoError(t, err)
-		assert.Equal(t, "rest", cfg.ExporterType)
-		assert.Equal(t, "ecoflow", cfg.MetricPrefix)
-		assert.Equal(t, "2112", cfg.Prometheus.Port)
-		assert.Equal(t, 30*time.Second, cfg.Rest.Interval)
-		assert.Equal(t, map[string]string{"SN1": "SN1", "SN2": "SN2"}, cfg.Devices)
-	})
-
-	t.Run("explicit empty prefix is kept", func(t *testing.T) {
-		cfg, err := LoadConfig(lookup(map[string]string{
-			"METRIC_PREFIX": "", "ECOFLOW_ACCESS_KEY": "a", "ECOFLOW_SECRET_KEY": "s", "REDIS_ENABLED": "1",
-		}))
-		require.NoError(t, err)
-		assert.Equal(t, "", cfg.MetricPrefix)
-	})
-
-	t.Run("pretty names merged with devices", func(t *testing.T) {
-		cfg, err := LoadConfig(lookup(map[string]string{
-			"EXPORTER_TYPE":                "mqtt",
-			"ECOFLOW_EMAIL":                "e",
-			"ECOFLOW_PASSWORD":             "p",
-			"ECOFLOW_DEVICES_PRETTY_NAMES": `{"SN1":"My Delta"}`,
-			"ECOFLOW_DEVICES":              "SN1,SN2",
-			"TIMESCALE_ENABLED":            "TRUE",
-			"TIMESCALE_URL":                "postgres://u:p@h/db",
-		}))
-		require.NoError(t, err)
-		assert.Equal(t, map[string]string{"SN1": "My Delta", "SN2": "SN2"}, cfg.Devices)
-		assert.Equal(t, 60*time.Second, cfg.Mqtt.OfflineThreshold)
-	})
-
-	t.Run("all errors reported", func(t *testing.T) {
-		_, err := LoadConfig(lookup(map[string]string{
-			"EXPORTER_TYPE":                         "mqtt",
-			"MQTT_DEVICE_OFFLINE_THRESHOLD_SECONDS": "0",
-			"TIMESCALE_ENABLED":                     "true",
-		}))
-		require.Error(t, err)
-		for _, want := range []string{"ECOFLOW_EMAIL", "ECOFLOW_DEVICES", "MQTT_DEVICE_OFFLINE_THRESHOLD_SECONDS", "TIMESCALE_URL"} {
-			assert.Contains(t, err.Error(), want)
-		}
-	})
-
-	t.Run("no handlers and unknown type", func(t *testing.T) {
-		_, err := LoadConfig(lookup(map[string]string{"EXPORTER_TYPE": "soap"}))
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "unknown EXPORTER_TYPE")
-		assert.Contains(t, err.Error(), "no metric handlers enabled")
-	})
-
-	t.Run("invalid pretty names", func(t *testing.T) {
-		_, err := LoadConfig(lookup(map[string]string{
-			"ECOFLOW_DEVICES_PRETTY_NAMES": "{", "ECOFLOW_ACCESS_KEY": "a", "ECOFLOW_SECRET_KEY": "s", "REDIS_ENABLED": "1",
-		}))
-		assert.ErrorContains(t, err, "unable to parse device mapping")
-	})
-}
-
-func TestPgxConnString(t *testing.T) {
-	assert.Equal(t, "postgresql://u:p@h:5432/db?sslmode=disable",
-		pgxConnString("postgresql://u:p@h:5432/db?sslmode=disable&x-migrations-table=m"))
-	assert.Equal(t, "host=h user=u", pgxConnString("host=h user=u"))
 }
 
 type fakeRestClient struct {
@@ -448,6 +297,48 @@ func TestMqttOfflineUpdatesOncePerThreshold(t *testing.T) {
 func TestMqttHealthBeforeLogin(t *testing.T) {
 	m := &MqttMetricsExporter{}
 	assert.ErrorContains(t, m.Health(), "not logged in")
+	assert.False(t, m.connected())
+	assert.ErrorContains(t, m.requestLatestQuotas("SN"), "not logged in")
+	assert.ErrorContains(t, m.sendRtcTimePing("SN"), "not logged in")
+}
+
+func TestMqttReloginAfterFruitlessReconnects(t *testing.T) {
+	m := &MqttMetricsExporter{relogin: make(chan struct{}, 1)}
+	for i := 1; i < reloginAfterReconnects; i++ {
+		assert.False(t, m.reloginDue(), "reconnect %d", i)
+	}
+	assert.True(t, m.reloginDue(), "log in again after %d reconnects without data", reloginAfterReconnects)
+	assert.False(t, m.reloginDue(), "the count starts over")
+
+	m.markReceived("SN")
+	for i := 1; i < reloginAfterReconnects; i++ {
+		assert.False(t, m.reloginDue(), "data from any device resets the count")
+	}
+
+	m.requestRelogin()
+	m.requestRelogin() // a pending request is enough, this must not block
+	assert.Len(t, m.relogin, 1)
+}
+
+func TestWatchdog(t *testing.T) {
+	var mu sync.Mutex
+	healthErr := errors.New("broken")
+	check := func() error {
+		mu.Lock()
+		defer mu.Unlock()
+		return healthErr
+	}
+
+	err := watchdog(context.Background(), check, 50*time.Millisecond, 10*time.Millisecond)
+	assert.ErrorContains(t, err, "stopping so that the exporter is restarted")
+	assert.ErrorIs(t, err, healthErr)
+
+	mu.Lock()
+	healthErr = nil
+	mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	assert.NoError(t, watchdog(ctx, check, 50*time.Millisecond, 10*time.Millisecond), "a healthy exporter keeps running")
 }
 
 func TestProtobufDecoderConcurrentUse(t *testing.T) {

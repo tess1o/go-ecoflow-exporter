@@ -7,24 +7,22 @@ import (
 )
 
 // Telemetry holds metrics about the exporter itself (not the devices).
-// A nil *Telemetry is valid and records nothing, so components work without Prometheus.
+// A nil *Telemetry is valid and records nothing, which keeps tests short.
 type Telemetry struct {
-	mqttConnected   prometheus.Gauge
-	lastMessage     *prometheus.GaugeVec
-	mqttMessages    *prometheus.CounterVec
-	decodeErrors    *prometheus.CounterVec
-	mqttPings       *prometheus.CounterVec
-	mqttReconnects  prometheus.Counter
-	restRequests    *prometheus.CounterVec
-	handlerDropped  *prometheus.CounterVec
-	handlerDuration *prometheus.HistogramVec
-	handlerErrors   *prometheus.CounterVec
-	handlerSuccess  *prometheus.GaugeVec
+	mqttConnected  prometheus.Gauge
+	lastMessage    *prometheus.GaugeVec
+	mqttMessages   *prometheus.CounterVec
+	decodeErrors   *prometheus.CounterVec
+	mqttPings      *prometheus.CounterVec
+	mqttReconnects prometheus.Counter
+	mqttRelogins   prometheus.Counter
+	restRequests   *prometheus.CounterVec
+	buildInfo      *prometheus.GaugeVec
 }
 
 // NewTelemetry creates the exporter metrics and registers them with reg.
 // Metric names are "<prefix>_exporter_*", for example "ecoflow_exporter_mqtt_connected".
-func NewTelemetry(prefix string, reg prometheus.Registerer) *Telemetry {
+func NewTelemetry(prefix, version string, reg prometheus.Registerer) *Telemetry {
 	name := func(n string) string { return prefix + "_exporter_" + n }
 	t := &Telemetry{
 		mqttConnected: prometheus.NewGauge(prometheus.GaugeOpts{
@@ -51,32 +49,24 @@ func NewTelemetry(prefix string, reg prometheus.Registerer) *Telemetry {
 			Name: name("mqtt_forced_reconnects_total"),
 			Help: "Reconnects forced because no device sent data within the offline threshold.",
 		}),
+		mqttRelogins: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: name("mqtt_relogins_total"),
+			Help: "Logins repeated to get fresh MQTT broker credentials, because reconnects did not bring data back.",
+		}),
 		restRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: name("rest_requests_total"),
 			Help: "EcoFlow REST API requests, by endpoint and result.",
 		}, []string{"endpoint", "result"}),
-		handlerDropped: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: name("handler_dropped_total"),
-			Help: "Updates dropped because a metric handler queue was full.",
-		}, []string{"handler"}),
-		handlerDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Name:    name("handler_duration_seconds"),
-			Help:    "Time spent by a metric handler to process one device update.",
-			Buckets: []float64{.001, .005, .025, .1, .5, 1, 5, 30},
-		}, []string{"handler"}),
-		handlerErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: name("handler_errors_total"),
-			Help: "Device updates a metric handler failed to store (after one retry for network errors).",
-		}, []string{"handler"}),
-		handlerSuccess: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: name("handler_last_success_timestamp_seconds"),
-			Help: "Unix time of the last device update a metric handler stored successfully.",
-		}, []string{"handler"}),
+		buildInfo: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: name("build_info"),
+			Help: "Always 1, labelled with the exporter version.",
+		}, []string{"version"}),
 	}
 	if reg != nil {
 		reg.MustRegister(t.mqttConnected, t.lastMessage, t.mqttMessages, t.decodeErrors, t.mqttPings,
-			t.mqttReconnects, t.restRequests, t.handlerDropped, t.handlerDuration, t.handlerErrors, t.handlerSuccess)
+			t.mqttReconnects, t.mqttRelogins, t.restRequests, t.buildInfo)
 	}
+	t.buildInfo.WithLabelValues(version).Set(1)
 	return t
 }
 
@@ -133,43 +123,16 @@ func (t *Telemetry) MqttForcedReconnect() {
 	t.mqttReconnects.Inc()
 }
 
+func (t *Telemetry) MqttRelogin() {
+	if t == nil {
+		return
+	}
+	t.mqttRelogins.Inc()
+}
+
 func (t *Telemetry) RestRequest(endpoint string, err error) {
 	if t == nil {
 		return
 	}
 	t.restRequests.WithLabelValues(endpoint, result(err)).Inc()
-}
-
-func (t *Telemetry) HandlerDropped(handler string) {
-	if t == nil {
-		return
-	}
-	t.handlerDropped.WithLabelValues(handler).Inc()
-}
-
-func (t *Telemetry) HandlerDuration(handler string, d time.Duration) {
-	if t == nil {
-		return
-	}
-	t.handlerDuration.WithLabelValues(handler).Observe(d.Seconds())
-}
-
-// HandlerStarted creates the per-handler series, so they exist (at 0) before anything happens
-func (t *Telemetry) HandlerStarted(handler string) {
-	if t == nil {
-		return
-	}
-	t.handlerErrors.WithLabelValues(handler)
-	t.handlerDropped.WithLabelValues(handler)
-}
-
-func (t *Telemetry) HandlerResult(handler string, err error) {
-	if t == nil {
-		return
-	}
-	if err != nil {
-		t.handlerErrors.WithLabelValues(handler).Inc()
-	} else {
-		t.handlerSuccess.WithLabelValues(handler).SetToCurrentTime()
-	}
 }

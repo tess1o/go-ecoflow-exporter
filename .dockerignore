@@ -1,0 +1,12 @@
+.git
+.github
+.claude
+.idea
+.DS_Store
+docs
+grafana_dashboards
+proto
+*.md
+docker-compose.yml
+/ecoflow-exporter
+/go-ecoflow-exporter

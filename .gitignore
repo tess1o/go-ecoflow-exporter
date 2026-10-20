@@ -2,3 +2,4 @@
 .DS_Store
 /go-ecoflow-exporter
 /ecoflow-exporter
+.claude

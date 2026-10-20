@@ -76,19 +76,20 @@ type MetricHandler interface {
 // dispatch passes the update to every handler
 func dispatch(ctx context.Context, handlers []MetricHandler, u *DeviceUpdate) {
 	for _, h := range handlers {
-		if err := h.Handle(ctx, u); err != nil {
+		if err := safeHandle(ctx, h, u); err != nil {
 			slog.Error("Metric handler failed", "device", u.Device.SN, "error", err)
 		}
 	}
 }
 
-type Shutdownable interface {
-	Close(ctx context.Context)
-}
-
-// HealthChecker is implemented by components that can report that they are not working
-type HealthChecker interface {
-	Health() error
+// safeHandle turns a panic of the handler into an error, so one bad update cannot stop the exporter
+func safeHandle(ctx context.Context, h MetricHandler, u *DeviceUpdate) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic: %v", r)
+		}
+	}()
+	return h.Handle(ctx, u)
 }
 
 // generateMetricName takes a rawMetric string (for example "pd.wireUsedTime") received from Ecoflow Rest API.

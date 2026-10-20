@@ -94,46 +94,38 @@ func TestPrometheusExporter_MetricUpdate(t *testing.T) {
 	assert.Equal(t, 2, finalMetricCount, "Should have exactly 2 metrics (battery.level, online)")
 }
 
-// TestPrometheusExporter_OfflineDevice tests that offline devices set all metrics to 0
+// TestPrometheusExporter_OfflineDevice tests that an offline device keeps only its online series,
+// and its metrics come back when it is online again
 func TestPrometheusExporter_OfflineDevice(t *testing.T) {
-	config := &PrometheusConfig{
-		Prefix: "test_offline", // Unique prefix
-	}
+	exporter := newTestPrometheusExporter(t, &PrometheusConfig{Prefix: "test_offline_drop"})
 
-	exporter := newTestPrometheusExporter(t, config)
-
-	time.Sleep(100 * time.Millisecond)
-
-	device := EcoflowDevice{
-		SN:     "OFFLINE123", // Unique device SN
-		Name:   "TestDevice",
-		Online: 1,
-	}
-
-	// First, set some metrics while online
+	device := EcoflowDevice{SN: "DROP123", Name: "TestDevice", Online: 1}
+	other := EcoflowDevice{SN: "OTHER123", Name: "OtherDevice", Online: 1}
 	params := map[string]interface{}{
 		"battery.level": 85.5,
 		"ac.voltage":    220.0,
 	}
 	handle(context.Background(), exporter, device, params)
+	handle(context.Background(), exporter, other, params)
 
-	exporter.mu.RLock()
-	onlineMetricCount := len(exporter.metrics)
-	exporter.mu.RUnlock()
-
-	assert.Equal(t, 3, onlineMetricCount, "Should have 3 metrics when online")
-
-	// Now mark device as offline
 	device.Online = 0
 	handle(context.Background(), exporter, device, map[string]interface{}{})
 
-	// Verify handleOfflineDevice was called and metrics still exist
-	// (They're set to 0, not deleted)
 	exporter.mu.RLock()
-	offlineMetricCount := len(exporter.metrics)
+	assert.Len(t, exporter.metrics, 4, "Offline device should keep only its online series")
+	require.Contains(t, exporter.metrics, "DROP123_test_offline_drop_online")
+	assert.Equal(t, 0.0, exporter.metrics["DROP123_test_offline_drop_online"].value)
+	assert.NotContains(t, exporter.metrics, "DROP123_test_offline_drop_ac_voltage")
+	assert.Contains(t, exporter.metrics, "OTHER123_test_offline_drop_ac_voltage", "Other devices must keep their metrics")
 	exporter.mu.RUnlock()
 
-	assert.Equal(t, onlineMetricCount, offlineMetricCount, "Metrics should still exist when offline")
+	device.Online = 1
+	handle(context.Background(), exporter, device, params)
+
+	exporter.mu.RLock()
+	defer exporter.mu.RUnlock()
+	assert.Len(t, exporter.metrics, 6, "Metrics should come back when the device is online")
+	assert.Equal(t, 220.0, exporter.metrics["DROP123_test_offline_drop_ac_voltage"].value)
 }
 
 // TestPrometheusExporter_ConcurrentUpdates tests that concurrent metric updates don't cause races
