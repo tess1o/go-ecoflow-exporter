@@ -16,11 +16,9 @@ import (
 func TestIntegration_MQTT_Prometheus_StaleDataFix(t *testing.T) {
 	// Create Prometheus exporter
 	promConfig := &PrometheusConfig{
-		Prefix:     "integ_stalefix",
-		ServerPort: "29991",
+		Prefix: "integ_stalefix",
 	}
-	promExporter := NewPrometheusExporter(promConfig)
-	defer promExporter.Close(context.Background())
+	promExporter := newTestPrometheusExporter(t, promConfig)
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -38,18 +36,7 @@ func TestIntegration_MQTT_Prometheus_StaleDataFix(t *testing.T) {
 		stateRefreshInterval: 300 * time.Second,
 		deviceState:          make(map[string]map[string]interface{}),
 		stateMu:              sync.RWMutex{},
-		pingStats: &PingStats{
-			successful:  make(map[string]int),
-			failed:      make(map[string]int),
-			lastAttempt: make(map[string]time.Time),
-			lastSuccess: make(map[string]time.Time),
-		},
 	}
-
-	// Initialize device status
-	mu.Lock()
-	deviceStatuses["INTEG_STALE"] = &DeviceStatus{LastReceived: time.Now()}
-	mu.Unlock()
 
 	// Scenario: Simulating power outage with partial MQTT updates
 	t.Log("Step 1: Device is on mains power, sends full state")
@@ -157,11 +144,9 @@ func TestIntegration_REST_Conceptual(t *testing.T) {
 func TestIntegration_ConcurrentMQTT_Prometheus(t *testing.T) {
 	// Create Prometheus exporter
 	promConfig := &PrometheusConfig{
-		Prefix:     "integ_concurrent",
-		ServerPort: "29989",
+		Prefix: "integ_concurrent",
 	}
-	promExporter := NewPrometheusExporter(promConfig)
-	defer promExporter.Close(context.Background())
+	promExporter := newTestPrometheusExporter(t, promConfig)
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -181,20 +166,7 @@ func TestIntegration_ConcurrentMQTT_Prometheus(t *testing.T) {
 		stateRefreshInterval: 300 * time.Second,
 		deviceState:          make(map[string]map[string]interface{}),
 		stateMu:              sync.RWMutex{},
-		pingStats: &PingStats{
-			successful:  make(map[string]int),
-			failed:      make(map[string]int),
-			lastAttempt: make(map[string]time.Time),
-			lastSuccess: make(map[string]time.Time),
-		},
 	}
-
-	// Initialize device statuses
-	mu.Lock()
-	for sn := range devices {
-		deviceStatuses[sn] = &DeviceStatus{LastReceived: time.Now()}
-	}
-	mu.Unlock()
 
 	// Simulate concurrent MQTT messages from multiple devices
 	var wg sync.WaitGroup
@@ -253,11 +225,9 @@ func TestIntegration_ConcurrentMQTT_Prometheus(t *testing.T) {
 func TestIntegration_DeviceOffline_Prometheus(t *testing.T) {
 	// Create Prometheus exporter
 	promConfig := &PrometheusConfig{
-		Prefix:     "integ_offline",
-		ServerPort: "29988",
+		Prefix: "integ_offline",
 	}
-	promExporter := NewPrometheusExporter(promConfig)
-	defer promExporter.Close(context.Background())
+	promExporter := newTestPrometheusExporter(t, promConfig)
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -275,17 +245,7 @@ func TestIntegration_DeviceOffline_Prometheus(t *testing.T) {
 		stateRefreshInterval: 300 * time.Second,
 		deviceState:          make(map[string]map[string]interface{}),
 		stateMu:              sync.RWMutex{},
-		pingStats: &PingStats{
-			successful:  make(map[string]int),
-			failed:      make(map[string]int),
-			lastAttempt: make(map[string]time.Time),
-			lastSuccess: make(map[string]time.Time),
-		},
 	}
-
-	mu.Lock()
-	deviceStatuses["INTEG_OFF"] = &DeviceStatus{LastReceived: time.Now()}
-	mu.Unlock()
 
 	// Step 1: Device is online with data
 	msg1 := map[string]interface{}{
@@ -316,7 +276,7 @@ func TestIntegration_DeviceOffline_Prometheus(t *testing.T) {
 		Name:   "OfflineDevice",
 		Online: 0,
 	}
-	promExporter.Handle(context.Background(), device, map[string]interface{}{})
+	handle(context.Background(), promExporter, device, map[string]interface{}{})
 	time.Sleep(200 * time.Millisecond)
 
 	// Verify metrics still exist (set to 0, not deleted)
@@ -333,11 +293,9 @@ func TestIntegration_DeviceOffline_Prometheus(t *testing.T) {
 func TestIntegration_MetricNameConversion(t *testing.T) {
 	// Create Prometheus exporter
 	promConfig := &PrometheusConfig{
-		Prefix:     "integ_names",
-		ServerPort: "29987",
+		Prefix: "integ_names",
 	}
-	promExporter := NewPrometheusExporter(promConfig)
-	defer promExporter.Close(context.Background())
+	promExporter := newTestPrometheusExporter(t, promConfig)
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -356,7 +314,7 @@ func TestIntegration_MetricNameConversion(t *testing.T) {
 		"ems.chgVol":           55.0,
 	}
 
-	promExporter.Handle(context.Background(), device, params)
+	handle(context.Background(), promExporter, device, params)
 	time.Sleep(200 * time.Millisecond)
 
 	// Verify metric names are correctly converted

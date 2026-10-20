@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os"
 	"strings"
+	"sync"
 
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
@@ -22,21 +22,29 @@ const (
 	FormatProtobuf
 )
 
-// isProtobufDebugEnabled checks if PROTOBUF_DEBUG environment variable is set
-func isProtobufDebugEnabled() bool {
-	val := os.Getenv("PROTOBUF_DEBUG")
-	return val == "true" || val == "1" || val == "TRUE"
+func (f MessageFormat) String() string {
+	switch f {
+	case FormatJSON:
+		return "json"
+	case FormatProtobuf:
+		return "protobuf"
+	default:
+		return "unknown"
+	}
 }
 
-// ProtobufDecoder handles decoding of protobuf messages
+// ProtobufDecoder handles decoding of protobuf messages. It is safe for concurrent use.
 type ProtobufDecoder struct {
+	debug           bool // PROTOBUF_DEBUG: dump messages to the log
+	mu              sync.Mutex
 	unknownCommands map[string]int  // Track unknown cmd_func/cmd_id combinations
 	seenDevices     map[string]bool // Track which devices have sent protobuf (for first-time logging)
 }
 
-// NewProtobufDecoder creates a new decoder instance
-func NewProtobufDecoder() *ProtobufDecoder {
+// NewProtobufDecoder creates a new decoder instance. debug dumps every message to the log.
+func NewProtobufDecoder(debug bool) *ProtobufDecoder {
 	return &ProtobufDecoder{
+		debug:           debug,
 		unknownCommands: make(map[string]int),
 		seenDevices:     make(map[string]bool),
 	}
@@ -44,11 +52,14 @@ func NewProtobufDecoder() *ProtobufDecoder {
 
 // LogFirstProtobufMessage logs INFO on first protobuf message from a device (only if PROTOBUF_DEBUG=true)
 func (d *ProtobufDecoder) LogFirstProtobufMessage(serialNumber string) {
-	if !isProtobufDebugEnabled() {
+	if !d.debug {
 		return
 	}
-	if !d.seenDevices[serialNumber] {
-		d.seenDevices[serialNumber] = true
+	d.mu.Lock()
+	seen := d.seenDevices[serialNumber]
+	d.seenDevices[serialNumber] = true
+	d.mu.Unlock()
+	if !seen {
 		slog.Info("[PROTOBUF_DEBUG] First protobuf message received from device",
 			"device", serialNumber,
 			"note", "This device uses protobuf format (likely Delta3/River3/STREAM Ultra)")
@@ -60,7 +71,7 @@ func DetectFormat(payload []byte) MessageFormat {
 	// First try JSON - quick check
 	trimmed := bytes.TrimSpace(payload)
 	if len(trimmed) >= 2 && trimmed[0] == '{' && trimmed[len(trimmed)-1] == '}' {
-		var test map[string]interface{}
+		var test map[string]any
 		if json.Unmarshal(trimmed, &test) == nil {
 			return FormatJSON
 		}
@@ -92,8 +103,8 @@ func xorDecrypt(data []byte, seq int32) []byte {
 }
 
 // DecodeProtobufMessage decodes a protobuf message and returns params map
-func (d *ProtobufDecoder) DecodeProtobufMessage(payload []byte) (map[string]interface{}, error) {
-	debugEnabled := isProtobufDebugEnabled()
+func (d *ProtobufDecoder) DecodeProtobufMessage(payload []byte) (map[string]any, error) {
+	debugEnabled := d.debug
 
 	// Dump raw payload if debug enabled
 	if debugEnabled {
@@ -144,7 +155,7 @@ func (d *ProtobufDecoder) DecodeProtobufMessage(payload []byte) (map[string]inte
 	}
 
 	// 2. Process all headers and merge their params
-	params := make(map[string]interface{})
+	params := make(map[string]any)
 	encryptedCount := 0
 	parsedCount := 0
 	failedCount := 0
@@ -180,7 +191,7 @@ func (d *ProtobufDecoder) DecodeProtobufMessage(payload []byte) (map[string]inte
 		}
 
 		// 4. Parse pdata as JSON (older devices) or as a nested protobuf message selected by cmd_func/cmd_id
-		var pdataParams map[string]interface{}
+		var pdataParams map[string]any
 		trimmed := bytes.TrimSpace(pdata)
 		if len(trimmed) > 0 && trimmed[0] == '{' && json.Unmarshal(trimmed, &pdataParams) == nil {
 			parsedCount++
@@ -236,7 +247,7 @@ func (d *ProtobufDecoder) DecodeProtobufMessage(payload []byte) (map[string]inte
 
 	// Known messages may legitimately carry no fields (sparse updates); only fail if nothing could be decoded
 	if parsedCount == 0 {
-		logArgs := []interface{}{
+		logArgs := []any{
 			"headers_total", len(headerMsg.Header),
 			"headers_failed", failedCount,
 		}
@@ -266,18 +277,17 @@ func formatAscii(data []byte) string {
 // logUnknownCommand logs unknown cmd_func/cmd_id combinations (ALWAYS logs, not gated by debug flag)
 func (d *ProtobufDecoder) logUnknownCommand(cmdFunc, cmdId int32, pdata []byte, parseErr error) {
 	key := fmt.Sprintf("%d:%d", cmdFunc, cmdId)
+	d.mu.Lock()
 	d.unknownCommands[key]++
 	count := d.unknownCommands[key]
+	d.mu.Unlock()
 
-	debugEnabled := isProtobufDebugEnabled()
-	previewLen := 128 // Show more in preview for troubleshooting
-	if len(pdata) < previewLen {
-		previewLen = len(pdata)
-	}
+	debugEnabled := d.debug
+	previewLen := min(128, len(pdata)) // Show more in preview for troubleshooting
 
 	// Log at INFO on first occurrence with full details for troubleshooting
 	if count == 1 {
-		logArgs := []interface{}{
+		logArgs := []any{
 			"cmd_func", cmdFunc,
 			"cmd_id", cmdId,
 			"pdata_len", len(pdata),
@@ -310,11 +320,4 @@ func (d *ProtobufDecoder) logUnknownCommand(cmdFunc, cmdId int32, pdata []byte, 
 			"occurrence_count", count,
 			"help", "This command type is not yet supported - enable PROTOBUF_DEBUG=true for full dumps")
 	}
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -13,12 +14,10 @@ import (
 // TestPrometheusExporter_MetricCreation tests that metrics are created correctly
 func TestPrometheusExporter_MetricCreation(t *testing.T) {
 	config := &PrometheusConfig{
-		Prefix:     "test_ecoflow",
-		ServerPort: "19999",
+		Prefix: "test_ecoflow",
 	}
 
-	exporter := NewPrometheusExporter(config)
-	defer exporter.Close(context.Background())
+	exporter := newTestPrometheusExporter(t, config)
 
 	// Wait for server to start
 	time.Sleep(100 * time.Millisecond)
@@ -34,7 +33,7 @@ func TestPrometheusExporter_MetricCreation(t *testing.T) {
 		"ac.voltage":    220.0,
 	}
 
-	exporter.Handle(context.Background(), device, params)
+	handle(context.Background(), exporter, device, params)
 
 	// Verify metrics were created in exporter's internal map
 	exporter.mu.RLock()
@@ -58,12 +57,10 @@ func TestPrometheusExporter_MetricCreation(t *testing.T) {
 // TestPrometheusExporter_MetricUpdate tests that existing metrics are updated
 func TestPrometheusExporter_MetricUpdate(t *testing.T) {
 	config := &PrometheusConfig{
-		Prefix:     "test_update", // Unique prefix
-		ServerPort: "19998",
+		Prefix: "test_update", // Unique prefix
 	}
 
-	exporter := NewPrometheusExporter(config)
-	defer exporter.Close(context.Background())
+	exporter := newTestPrometheusExporter(t, config)
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -77,7 +74,7 @@ func TestPrometheusExporter_MetricUpdate(t *testing.T) {
 	params1 := map[string]interface{}{
 		"battery.level": 85.5,
 	}
-	exporter.Handle(context.Background(), device, params1)
+	handle(context.Background(), exporter, device, params1)
 
 	exporter.mu.RLock()
 	initialMetricCount := len(exporter.metrics)
@@ -87,7 +84,7 @@ func TestPrometheusExporter_MetricUpdate(t *testing.T) {
 	params2 := map[string]interface{}{
 		"battery.level": 90.0,
 	}
-	exporter.Handle(context.Background(), device, params2)
+	handle(context.Background(), exporter, device, params2)
 
 	exporter.mu.RLock()
 	finalMetricCount := len(exporter.metrics)
@@ -100,12 +97,10 @@ func TestPrometheusExporter_MetricUpdate(t *testing.T) {
 // TestPrometheusExporter_OfflineDevice tests that offline devices set all metrics to 0
 func TestPrometheusExporter_OfflineDevice(t *testing.T) {
 	config := &PrometheusConfig{
-		Prefix:     "test_offline", // Unique prefix
-		ServerPort: "19997",
+		Prefix: "test_offline", // Unique prefix
 	}
 
-	exporter := NewPrometheusExporter(config)
-	defer exporter.Close(context.Background())
+	exporter := newTestPrometheusExporter(t, config)
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -120,7 +115,7 @@ func TestPrometheusExporter_OfflineDevice(t *testing.T) {
 		"battery.level": 85.5,
 		"ac.voltage":    220.0,
 	}
-	exporter.Handle(context.Background(), device, params)
+	handle(context.Background(), exporter, device, params)
 
 	exporter.mu.RLock()
 	onlineMetricCount := len(exporter.metrics)
@@ -130,7 +125,7 @@ func TestPrometheusExporter_OfflineDevice(t *testing.T) {
 
 	// Now mark device as offline
 	device.Online = 0
-	exporter.Handle(context.Background(), device, map[string]interface{}{})
+	handle(context.Background(), exporter, device, map[string]interface{}{})
 
 	// Verify handleOfflineDevice was called and metrics still exist
 	// (They're set to 0, not deleted)
@@ -144,12 +139,10 @@ func TestPrometheusExporter_OfflineDevice(t *testing.T) {
 // TestPrometheusExporter_ConcurrentUpdates tests that concurrent metric updates don't cause races
 func TestPrometheusExporter_ConcurrentUpdates(t *testing.T) {
 	config := &PrometheusConfig{
-		Prefix:     "test_concurrent", // Unique prefix
-		ServerPort: "19996",
+		Prefix: "test_concurrent", // Unique prefix
 	}
 
-	exporter := NewPrometheusExporter(config)
-	defer exporter.Close(context.Background())
+	exporter := newTestPrometheusExporter(t, config)
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -173,7 +166,7 @@ func TestPrometheusExporter_ConcurrentUpdates(t *testing.T) {
 					"battery.level": float64(j % 100),
 					"ac.voltage":    float64(220 + id),
 				}
-				exporter.Handle(context.Background(), device, params)
+				handle(context.Background(), exporter, device, params)
 			}
 		}(i)
 	}
@@ -191,12 +184,10 @@ func TestPrometheusExporter_ConcurrentUpdates(t *testing.T) {
 // TestPrometheusExporter_MultipleDevices tests handling multiple devices
 func TestPrometheusExporter_MultipleDevices(t *testing.T) {
 	config := &PrometheusConfig{
-		Prefix:     "test_multi", // Unique prefix
-		ServerPort: "19995",
+		Prefix: "test_multi", // Unique prefix
 	}
 
-	exporter := NewPrometheusExporter(config)
-	defer exporter.Close(context.Background())
+	exporter := newTestPrometheusExporter(t, config)
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -212,7 +203,7 @@ func TestPrometheusExporter_MultipleDevices(t *testing.T) {
 	}
 
 	for _, device := range devices {
-		exporter.Handle(context.Background(), device, params)
+		handle(context.Background(), exporter, device, params)
 	}
 
 	// Each device should have 3 metrics: battery.level, ac.voltage, online
@@ -241,12 +232,10 @@ func TestPrometheusExporter_MultipleDevices(t *testing.T) {
 // TestPrometheusExporter_InvalidValues tests handling of invalid metric values
 func TestPrometheusExporter_InvalidValues(t *testing.T) {
 	config := &PrometheusConfig{
-		Prefix:     "test_invalid", // Unique prefix
-		ServerPort: "19994",
+		Prefix: "test_invalid", // Unique prefix
 	}
 
-	exporter := NewPrometheusExporter(config)
-	defer exporter.Close(context.Background())
+	exporter := newTestPrometheusExporter(t, config)
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -268,7 +257,7 @@ func TestPrometheusExporter_InvalidValues(t *testing.T) {
 
 	// Should not panic
 	require.NotPanics(t, func() {
-		exporter.Handle(context.Background(), device, params)
+		handle(context.Background(), exporter, device, params)
 	})
 
 	// Verify that valid metrics were created
@@ -341,12 +330,10 @@ func TestPrometheusExporter_MetricNameGeneration(t *testing.T) {
 // TestPrometheusExporter_NoInputMutation tests that input parameters are not mutated
 func TestPrometheusExporter_NoInputMutation(t *testing.T) {
 	config := &PrometheusConfig{
-		Prefix:     "test_nomutate", // Unique prefix
-		ServerPort: "19993",
+		Prefix: "test_nomutate", // Unique prefix
 	}
 
-	exporter := NewPrometheusExporter(config)
-	defer exporter.Close(context.Background())
+	exporter := newTestPrometheusExporter(t, config)
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -363,53 +350,43 @@ func TestPrometheusExporter_NoInputMutation(t *testing.T) {
 
 	originalLen := len(params)
 
-	exporter.Handle(context.Background(), device, params)
+	handle(context.Background(), exporter, device, params)
 
 	// Input should not be mutated
 	assert.Equal(t, originalLen, len(params), "Input parameters should not be modified")
 	assert.NotContains(t, params, "online", "Online metric should not be added to input")
 }
 
-// TestPrometheusExporter_GracefulShutdown tests HTTP server shutdown
-func TestPrometheusExporter_GracefulShutdown(t *testing.T) {
-	config := &PrometheusConfig{
-		Prefix:     "test_shutdown", // Unique prefix
-		ServerPort: "19992",
-	}
+// TestHTTPServer_GracefulShutdown tests that the HTTP server stops serving after Close
+func TestHTTPServer_GracefulShutdown(t *testing.T) {
+	exporter := newTestPrometheusExporter(t, &PrometheusConfig{Prefix: "test_shutdown"})
+	server, err := NewHTTPServer("19992", exporter.Handler())
+	require.NoError(t, err)
 
-	exporter := NewPrometheusExporter(config)
+	resp, err := http.Get("http://127.0.0.1:19992/metrics")
+	require.NoError(t, err)
+	resp.Body.Close()
 
-	// Verify server is running
-	time.Sleep(100 * time.Millisecond)
-
-	// Shutdown
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	server.Close(ctx)
 
-	require.NotPanics(t, func() {
-		exporter.Close(ctx)
-	})
-
-	// Give server time to stop
-	time.Sleep(100 * time.Millisecond)
+	_, err = http.Get("http://127.0.0.1:19992/metrics")
+	assert.Error(t, err, "server is stopped")
 }
 
 // TestPrometheusExporter_StateIsolation tests that each exporter instance has isolated state
 func TestPrometheusExporter_StateIsolation(t *testing.T) {
 	// Create two separate exporters
 	config1 := &PrometheusConfig{
-		Prefix:     "exporter1",
-		ServerPort: "19991",
+		Prefix: "exporter1",
 	}
-	exporter1 := NewPrometheusExporter(config1)
-	defer exporter1.Close(context.Background())
+	exporter1 := newTestPrometheusExporter(t, config1)
 
 	config2 := &PrometheusConfig{
-		Prefix:     "exporter2",
-		ServerPort: "19990",
+		Prefix: "exporter2",
 	}
-	exporter2 := NewPrometheusExporter(config2)
-	defer exporter2.Close(context.Background())
+	exporter2 := newTestPrometheusExporter(t, config2)
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -424,7 +401,7 @@ func TestPrometheusExporter_StateIsolation(t *testing.T) {
 	}
 
 	// Update exporter1
-	exporter1.Handle(context.Background(), device, params)
+	handle(context.Background(), exporter1, device, params)
 
 	// Update exporter2 with different device
 	device2 := EcoflowDevice{
@@ -432,7 +409,7 @@ func TestPrometheusExporter_StateIsolation(t *testing.T) {
 		Name:   "TestDevice2",
 		Online: 1,
 	}
-	exporter2.Handle(context.Background(), device2, params)
+	handle(context.Background(), exporter2, device2, params)
 
 	// Verify exporters have isolated state
 	exporter1.mu.RLock()
@@ -461,4 +438,19 @@ func TestPrometheusExporter_StateIsolation(t *testing.T) {
 	assert.False(t, hasDevice2InExp1, "Exporter1 should not have device2 metrics")
 	assert.True(t, hasDevice2, "Exporter2 should have device2 metrics")
 	assert.False(t, hasDevice1InExp2, "Exporter2 should not have device1 metrics")
+}
+
+func newTestPrometheusExporter(t *testing.T, config *PrometheusConfig) *PrometheusExporter {
+	t.Helper()
+	exporter, err := NewPrometheusExporter(config)
+	require.NoError(t, err)
+	return exporter
+}
+
+// servePrometheus serves the exporter's /metrics on port until the test ends
+func servePrometheus(t *testing.T, exporter *PrometheusExporter, port string) {
+	t.Helper()
+	server, err := NewHTTPServer(port, exporter.Handler())
+	require.NoError(t, err)
+	t.Cleanup(func() { server.Close(context.Background()) })
 }

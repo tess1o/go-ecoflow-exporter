@@ -35,7 +35,7 @@ func decodeSingleHeader(t *testing.T, cmdFunc, cmdId int32, pdata []byte) map[st
 	if err != nil {
 		t.Fatalf("Failed to marshal protobuf: %v", err)
 	}
-	params, err := NewProtobufDecoder().DecodeProtobufMessage(payload)
+	params, err := NewProtobufDecoder(false).DecodeProtobufMessage(payload)
 	if err != nil {
 		t.Fatalf("DecodeProtobufMessage() error = %v", err)
 	}
@@ -126,7 +126,7 @@ func TestDecodeProtobufMessage_EmptyKnownMessageIsNotAnError(t *testing.T) {
 	payload, _ := proto.Marshal(&HeaderMessage{
 		Header: []*Header{{Pdata: []byte{0xf0, 0x56, 0x01}, CmdFunc: 254, CmdId: 22}},
 	})
-	params, err := NewProtobufDecoder().DecodeProtobufMessage(payload)
+	params, err := NewProtobufDecoder(false).DecodeProtobufMessage(payload)
 	if err != nil {
 		t.Fatalf("DecodeProtobufMessage() error = %v", err)
 	}
@@ -146,7 +146,7 @@ func TestDecodeProtobufMessage_NoXORForSrc32(t *testing.T) {
 			CmdId:   21,
 		}},
 	})
-	params, err := NewProtobufDecoder().DecodeProtobufMessage(payload)
+	params, err := NewProtobufDecoder(false).DecodeProtobufMessage(payload)
 	if err != nil {
 		t.Fatalf("DecodeProtobufMessage() error = %v", err)
 	}
@@ -165,7 +165,7 @@ func TestDecodeProtobufMessage_XORProtobufPdata(t *testing.T) {
 			CmdId:   21,
 		}},
 	})
-	params, err := NewProtobufDecoder().DecodeProtobufMessage(payload)
+	params, err := NewProtobufDecoder(false).DecodeProtobufMessage(payload)
 	if err != nil {
 		t.Fatalf("DecodeProtobufMessage() error = %v", err)
 	}

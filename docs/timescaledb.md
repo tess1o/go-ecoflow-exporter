@@ -17,7 +17,8 @@ SELECT create_hypertable('ecoflow_metrics', 'timestamp', if_not_exists => TRUE);
 
 The metric values are stored in one JSONB column `metrics`. It's a key/value map: "metric1" : "value1", "metric2" : "
 value2".
-One row in the table stores all metrics for given device for given timestamp.
+One row in the table stores all metrics for given device for given timestamp. The timestamp is the time the
+exporter received the parameters from EcoFlow.
 You can easily get the metric name using jsonb operator: `cast(metrics ->> 'METRIC_NAME' AS float)`.
 You can find usage examples below in this document.
 
@@ -48,6 +49,15 @@ There is no cleanup procedure implemented at the moment, so you might want to cl
     - `TIMESCALE_URL` - TimescaleDB connection string. The username and password should match the values
       from `TIMESCALE_USERNAME` and `TIMESCALE_PASSWORD`. Default
       value: `postgresql://postgres:postgres@timescaledb:5432/postgres?sslmode=disable`
+    - `TIMESCALE_MIGRATIONS_URL` - optional golang-migrate source with your own migrations (for example
+      `file:///app/migrations/timescale`). By default the migrations embedded in the exporter binary are used.
+    - `TIMESCALE_COMPRESSION_AFTER_DAYS` - enable native compression (segmented by `serial_number`) of data older
+      than this many days. Compressed data is queried exactly like before. Not set: compression is left as it is
+    - `TIMESCALE_RETENTION_DAYS` - drop data older than this many days. Not set: the retention policy is left as it
+      is (data is kept forever unless you added a policy yourself)
+    - `TIMESCALE_MIN_WRITE_INTERVAL_SECONDS` - store at most one row per device every N seconds. MQTT devices can
+      report several times per second; the latest state within the interval is written, and a change of the online
+      status is always written right away. Not set: every update is stored
     - `METRIC_PREFIX`: the prefix that will be added to all metrics. Default value is `ecoflow`. For instance
       metric `bms_bmsStatus.minCellTemp` will be exported to prometheus as `ecoflow.bms_bmsStatus.minCellTemp`.
     - `SCRAPING_INTERVAL` - scrapping interval in seconds. How often should the exporter execute requests to Ecoflow
@@ -62,6 +72,12 @@ There is no cleanup procedure implemented at the moment, so you might want to cl
       in Grafana dashboard instead of a serial number.
       Example: `ECOFLOW_DEVICES_PRETTY_NAMES={"R33XXXXXXXXX":"My Delta 2", "R33YYYYY":"Delta Pro backup"}`
     - `DEBUG_ENABLED` - enable debug log messages. Default value is "false". To enable use values `true` or `1`
+    - `LOG_LEVEL` - `debug`, `info`, `warn` or `error`. Overrides `DEBUG_ENABLED`. `LOG_FORMAT=json` writes
+      structured logs instead of text
+    - `HANDLER_UNHEALTHY_AFTER_SECONDS` - report the exporter as unhealthy (`/healthz`, Docker health status) when an
+      output keeps failing for this many seconds. Disabled by default
+    - `ECOFLOW_SECRET_KEY_FILE`, `ECOFLOW_PASSWORD_FILE`, `TIMESCALE_URL_FILE`, `REDIS_PASSWORD_FILE` - read the value
+      from a file (Docker secrets). The plain variable wins when both are set
     - `GRAFANA_USERNAME` - admin username in Grafana. Default value: `grafana`. Can be changed later in Grafana UI
     - `GRAFANA_PASSWORD` - admin password in Grafana. Default value: `grafana`. Can be changed later in Grafana UI
 

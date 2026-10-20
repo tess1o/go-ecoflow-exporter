@@ -36,6 +36,19 @@
     - `DEBUG_ENABLED` - enable debug log messages. Default value is "false". To enable use values `true` or `1`
     - `GRAFANA_USERNAME` - admin username in Grafana. Default value: `grafana`. Can be changed later in Grafana UI
     - `GRAFANA_PASSWORD` - admin password in Grafana. Default value: `grafana`. Can be changed later in Grafana UI
+    - `PROMETHEUS_METRIC_TTL_SECONDS` - drop device series that were not updated for this many seconds (for
+      example parameters of a removed extra battery). Default `0` keeps them forever. The `online` series is never
+      dropped. Note that in MQTT mode the exporter re-sends the last known value of every parameter, so only series of
+      offline devices expire.
+    - `HANDLER_QUEUE_SIZE` - how many pending updates each output (Prometheus, TimescaleDB, Redis) may buffer before
+      new updates are dropped with a warning. Default value: `256`
+    - `HANDLER_TIMEOUT_SECONDS` - maximum time an output may spend on one update. Default value: `30`
+    - `LOG_LEVEL` - `debug`, `info`, `warn` or `error`. Overrides `DEBUG_ENABLED`. `LOG_FORMAT=json` writes
+      structured logs instead of text
+    - `HANDLER_UNHEALTHY_AFTER_SECONDS` - report the exporter as unhealthy (`/healthz`, Docker health status) when an
+      output keeps failing for this many seconds. Disabled by default
+    - `ECOFLOW_SECRET_KEY_FILE`, `ECOFLOW_PASSWORD_FILE`, `TIMESCALE_URL_FILE`, `REDIS_PASSWORD_FILE` - read the value
+      from a file (Docker secrets). The plain variable wins when both are set
 4. Save `.env` file with your changes.
 5. Start all
    containers: `docker-compose -f docker-compose/grafana-compose.yml -f docker-compose/exporter-remote-compose.yml -f docker-compose/prometheus-compose.yml up -d`
@@ -47,15 +60,45 @@
    ```
 6. The services are available here:
     - http://localhost:2112/metrics - the exporter
+    - http://localhost:2112/healthz - the exporter health: `200 ok`, or `503` when the MQTT broker is not connected /
+      the EcoFlow REST API has failed for 3 scraping intervals in a row (used by the Docker `HEALTHCHECK`).
+      It is also served when Prometheus is disabled (TimescaleDB or Redis only), on `PROMETHEUS_PORT`
     - http://localhost:9090 - Prometheus
     - http://localhost:3000 - Grafana
 
 7. Navigate to http://localhost:3000 in your web browser and use GRAFANA_USERNAME / GRAFANA_PASSWORD credentials from
-   .env file to access Grafana. It is already configured with prometheus as the default datasource.
-   Navigate to Dashboards → Import dashboard → import ID `17812`, select the only existing Prometheus datasource.
+   .env file to access Grafana. It is already configured with prometheus as the default datasource and comes with
+   the "EcoFlow" dashboard (folder EcoFlow, from `grafana_dashboards/`) showing device status, battery, power and the
+   exporter health. Parameter names differ between device models, so some panels may stay empty for your device.
+   You can also import the community dashboard: Dashboards → Import dashboard → import ID `17812`, select the only
+   existing Prometheus datasource.
    (The Grafana dashboard was implemented
    in https://github.com/berezhinskiy/ecoflow_exporter/tree/master/docker-compose)
 
 ## Dashboard example
 
 ![img.png](images/dashboard_example.png)
+
+## Exporter metrics
+
+Besides the device parameters, the exporter reports its own state (with the default prefix):
+
+| Metric | Description |
+|---|---|
+| `ecoflow_exporter_mqtt_connected` | 1 when connected to the EcoFlow MQTT broker |
+| `ecoflow_exporter_last_message_timestamp_seconds{device,serial_number}` | Unix time of the last parameters received from the device |
+| `ecoflow_exporter_mqtt_messages_total{serial_number,format}` | MQTT messages received, by format (`json`, `protobuf`, `unknown`) |
+| `ecoflow_exporter_decode_errors_total{serial_number,format}` | MQTT messages that could not be decoded |
+| `ecoflow_exporter_mqtt_pings_total{serial_number,type,result}` | Keepalive pings and state refresh requests |
+| `ecoflow_exporter_mqtt_forced_reconnects_total` | Reconnects forced because no device sent data |
+| `ecoflow_exporter_rest_requests_total{endpoint,result}` | EcoFlow REST API calls |
+| `ecoflow_exporter_handler_dropped_total{handler}` | Updates dropped because an output was too slow |
+| `ecoflow_exporter_handler_duration_seconds{handler}` | Time spent by each output per update |
+| `ecoflow_exporter_handler_errors_total{handler}` | Updates an output failed to store (network errors are retried once) |
+| `ecoflow_exporter_handler_last_success_timestamp_seconds{handler}` | Unix time of the last update an output stored |
+
+For example, alert when a device stopped reporting for 10 minutes:
+`time() - ecoflow_exporter_last_message_timestamp_seconds > 600`
+
+Alert when TimescaleDB or Redis stops accepting data:
+`increase(ecoflow_exporter_handler_errors_total[15m]) > 0`

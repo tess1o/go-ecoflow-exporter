@@ -21,20 +21,28 @@ type MockMetricHandler struct {
 	mu             sync.Mutex
 	receivedParams []map[string]interface{}
 	receivedDevice []EcoflowDevice
+	receivedTimes  []time.Time
 }
 
-func (m *MockMetricHandler) Handle(ctx context.Context, device EcoflowDevice, rawParameters map[string]interface{}) {
+func (m *MockMetricHandler) Handle(ctx context.Context, u *DeviceUpdate) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	// Deep copy the params to avoid race conditions
 	paramsCopy := make(map[string]interface{})
-	for k, v := range rawParameters {
+	for k, v := range u.Params {
 		paramsCopy[k] = v
 	}
 
 	m.receivedParams = append(m.receivedParams, paramsCopy)
-	m.receivedDevice = append(m.receivedDevice, device)
+	m.receivedDevice = append(m.receivedDevice, u.Device)
+	m.receivedTimes = append(m.receivedTimes, u.Time)
+	return nil
+}
+
+// handle passes the parameters to h as one update
+func handle(ctx context.Context, h MetricHandler, device EcoflowDevice, params map[string]any) {
+	_ = h.Handle(ctx, NewDeviceUpdate(device, params))
 }
 
 func (m *MockMetricHandler) GetReceivedParams() []map[string]interface{} {
@@ -83,19 +91,8 @@ func TestMqttExporter_StateCache_PartialUpdates(t *testing.T) {
 		stateRefreshInterval: 300 * time.Second,
 		deviceState:          make(map[string]map[string]interface{}),
 		stateMu:              sync.RWMutex{},
-		pingStats: &PingStats{
-			successful:  make(map[string]int),
-			failed:      make(map[string]int),
-			lastAttempt: make(map[string]time.Time),
-			lastSuccess: make(map[string]time.Time),
-		},
-		protobufDecoder: protobuf.NewProtobufDecoder(),
+		protobufDecoder:      protobuf.NewProtobufDecoder(false),
 	}
-
-	// Initialize device statuses
-	mu.Lock()
-	deviceStatuses["TEST123"] = &DeviceStatus{LastReceived: time.Now()}
-	mu.Unlock()
 
 	// Simulate first MQTT message with full state
 	msg1 := ecoflow.MqttDeviceParams{
@@ -175,20 +172,8 @@ func TestMqttExporter_StateCache_MultipleDevices(t *testing.T) {
 		stateRefreshInterval: 300 * time.Second,
 		deviceState:          make(map[string]map[string]interface{}),
 		stateMu:              sync.RWMutex{},
-		pingStats: &PingStats{
-			successful:  make(map[string]int),
-			failed:      make(map[string]int),
-			lastAttempt: make(map[string]time.Time),
-			lastSuccess: make(map[string]time.Time),
-		},
-		protobufDecoder: protobuf.NewProtobufDecoder(),
+		protobufDecoder:      protobuf.NewProtobufDecoder(false),
 	}
-
-	// Initialize device statuses
-	mu.Lock()
-	deviceStatuses["DEVICE1"] = &DeviceStatus{LastReceived: time.Now()}
-	deviceStatuses["DEVICE2"] = &DeviceStatus{LastReceived: time.Now()}
-	mu.Unlock()
 
 	// Send data for DEVICE1
 	msg1 := ecoflow.MqttDeviceParams{
@@ -253,13 +238,7 @@ func TestMqttExporter_UnconfiguredDevice(t *testing.T) {
 		stateRefreshInterval: 300 * time.Second,
 		deviceState:          make(map[string]map[string]interface{}),
 		stateMu:              sync.RWMutex{},
-		pingStats: &PingStats{
-			successful:  make(map[string]int),
-			failed:      make(map[string]int),
-			lastAttempt: make(map[string]time.Time),
-			lastSuccess: make(map[string]time.Time),
-		},
-		protobufDecoder: protobuf.NewProtobufDecoder(),
+		protobufDecoder:      protobuf.NewProtobufDecoder(false),
 	}
 
 	// Send message for unconfigured device
@@ -305,13 +284,7 @@ func TestMqttExporter_InvalidTopic(t *testing.T) {
 		stateRefreshInterval: 300 * time.Second,
 		deviceState:          make(map[string]map[string]interface{}),
 		stateMu:              sync.RWMutex{},
-		pingStats: &PingStats{
-			successful:  make(map[string]int),
-			failed:      make(map[string]int),
-			lastAttempt: make(map[string]time.Time),
-			lastSuccess: make(map[string]time.Time),
-		},
-		protobufDecoder: protobuf.NewProtobufDecoder(),
+		protobufDecoder:      protobuf.NewProtobufDecoder(false),
 	}
 
 	testCases := []struct {
@@ -368,18 +341,8 @@ func TestMqttExporter_EmptyParameters(t *testing.T) {
 		stateRefreshInterval: 300 * time.Second,
 		deviceState:          make(map[string]map[string]interface{}),
 		stateMu:              sync.RWMutex{},
-		pingStats: &PingStats{
-			successful:  make(map[string]int),
-			failed:      make(map[string]int),
-			lastAttempt: make(map[string]time.Time),
-			lastSuccess: make(map[string]time.Time),
-		},
-		protobufDecoder: protobuf.NewProtobufDecoder(),
+		protobufDecoder:      protobuf.NewProtobufDecoder(false),
 	}
-
-	mu.Lock()
-	deviceStatuses["TEST123"] = &DeviceStatus{LastReceived: time.Now()}
-	mu.Unlock()
 
 	// Send message with empty parameters
 	msg := ecoflow.MqttDeviceParams{
@@ -415,18 +378,8 @@ func TestMqttExporter_InvalidJSON(t *testing.T) {
 		stateRefreshInterval: 300 * time.Second,
 		deviceState:          make(map[string]map[string]interface{}),
 		stateMu:              sync.RWMutex{},
-		pingStats: &PingStats{
-			successful:  make(map[string]int),
-			failed:      make(map[string]int),
-			lastAttempt: make(map[string]time.Time),
-			lastSuccess: make(map[string]time.Time),
-		},
-		protobufDecoder: protobuf.NewProtobufDecoder(),
+		protobufDecoder:      protobuf.NewProtobufDecoder(false),
 	}
-
-	mu.Lock()
-	deviceStatuses["TEST123"] = &DeviceStatus{LastReceived: time.Now()}
-	mu.Unlock()
 
 	// Send invalid JSON
 	mockMsg := &mockMQTTMessage{
@@ -464,21 +417,8 @@ func TestMqttExporter_ConcurrentMessageHandling(t *testing.T) {
 		stateRefreshInterval: 300 * time.Second,
 		deviceState:          make(map[string]map[string]interface{}),
 		stateMu:              sync.RWMutex{},
-		pingStats: &PingStats{
-			successful:  make(map[string]int),
-			failed:      make(map[string]int),
-			lastAttempt: make(map[string]time.Time),
-			lastSuccess: make(map[string]time.Time),
-		},
-		protobufDecoder: protobuf.NewProtobufDecoder(),
+		protobufDecoder:      protobuf.NewProtobufDecoder(false),
 	}
-
-	// Initialize device statuses
-	mu.Lock()
-	for sn := range devices {
-		deviceStatuses[sn] = &DeviceStatus{LastReceived: time.Now()}
-	}
-	mu.Unlock()
 
 	// Simulate concurrent MQTT messages from multiple devices
 	var wg sync.WaitGroup
@@ -546,7 +486,7 @@ func TestMqttExporter_InputValidation(t *testing.T) {
 			pingInterval:         20 * time.Second,
 			stateRefreshInterval: 300 * time.Second,
 			handlers:             []MetricHandler{handler},
-			shouldError:          true, // Will fail on getUserId, but passes validation
+			shouldError:          false, // login happens in Run
 			errorContains:        "",
 		},
 		{
@@ -637,15 +577,14 @@ func TestMqttExporter_InputValidation(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := NewMqttMetricsExporter(
-				tc.email,
-				tc.password,
-				tc.devices,
-				tc.offlineThreshold,
-				tc.pingInterval,
-				tc.stateRefreshInterval,
-				tc.handlers...,
-			)
+			_, err := NewMqttMetricsExporter(MqttExporterConfig{
+				Email:                tc.email,
+				Password:             tc.password,
+				Devices:              tc.devices,
+				OfflineThreshold:     tc.offlineThreshold,
+				PingInterval:         tc.pingInterval,
+				StateRefreshInterval: tc.stateRefreshInterval,
+			}, tc.handlers...)
 
 			if tc.shouldError {
 				assert.Error(t, err)
@@ -695,19 +634,8 @@ func TestMessageHandler_ProtobufMessage(t *testing.T) {
 		stateRefreshInterval: 300 * time.Second,
 		deviceState:          make(map[string]map[string]interface{}),
 		stateMu:              sync.RWMutex{},
-		pingStats: &PingStats{
-			successful:  make(map[string]int),
-			failed:      make(map[string]int),
-			lastAttempt: make(map[string]time.Time),
-			lastSuccess: make(map[string]time.Time),
-		},
-		protobufDecoder: protobuf.NewProtobufDecoder(),
+		protobufDecoder:      protobuf.NewProtobufDecoder(false),
 	}
-
-	// Initialize device statuses
-	mu.Lock()
-	deviceStatuses["PROTO123"] = &DeviceStatus{LastReceived: time.Now()}
-	mu.Unlock()
 
 	// Create a protobuf message with unencrypted JSON data
 	pdataJSON := map[string]interface{}{
@@ -758,7 +686,7 @@ func TestMessageHandler_ProtobufNestedPdata(t *testing.T) {
 		devices:         map[string]string{"DELTA3": "Delta3"},
 		handlers:        []MetricHandler{handler},
 		deviceState:     make(map[string]map[string]interface{}),
-		protobufDecoder: protobuf.NewProtobufDecoder(),
+		protobufDecoder: protobuf.NewProtobufDecoder(false),
 	}
 
 	// Display property upload captured from a Delta 3 (issue #26)
@@ -802,18 +730,8 @@ func TestMessageHandler_ProtobufWithEncryption(t *testing.T) {
 		stateRefreshInterval: 300 * time.Second,
 		deviceState:          make(map[string]map[string]interface{}),
 		stateMu:              sync.RWMutex{},
-		pingStats: &PingStats{
-			successful:  make(map[string]int),
-			failed:      make(map[string]int),
-			lastAttempt: make(map[string]time.Time),
-			lastSuccess: make(map[string]time.Time),
-		},
-		protobufDecoder: protobuf.NewProtobufDecoder(),
+		protobufDecoder:      protobuf.NewProtobufDecoder(false),
 	}
-
-	mu.Lock()
-	deviceStatuses["PROTO456"] = &DeviceStatus{LastReceived: time.Now()}
-	mu.Unlock()
 
 	// Create JSON data and encrypt it
 	pdataJSON := map[string]interface{}{
@@ -879,18 +797,8 @@ func TestMessageHandler_ProtobufPartialUpdates(t *testing.T) {
 		stateRefreshInterval: 300 * time.Second,
 		deviceState:          make(map[string]map[string]interface{}),
 		stateMu:              sync.RWMutex{},
-		pingStats: &PingStats{
-			successful:  make(map[string]int),
-			failed:      make(map[string]int),
-			lastAttempt: make(map[string]time.Time),
-			lastSuccess: make(map[string]time.Time),
-		},
-		protobufDecoder: protobuf.NewProtobufDecoder(),
+		protobufDecoder:      protobuf.NewProtobufDecoder(false),
 	}
-
-	mu.Lock()
-	deviceStatuses["PROTO789"] = &DeviceStatus{LastReceived: time.Now()}
-	mu.Unlock()
 
 	// First protobuf message with full state
 	pdata1 := map[string]interface{}{
@@ -979,18 +887,8 @@ func TestMessageHandler_JSONStillWorks(t *testing.T) {
 		stateRefreshInterval: 300 * time.Second,
 		deviceState:          make(map[string]map[string]interface{}),
 		stateMu:              sync.RWMutex{},
-		pingStats: &PingStats{
-			successful:  make(map[string]int),
-			failed:      make(map[string]int),
-			lastAttempt: make(map[string]time.Time),
-			lastSuccess: make(map[string]time.Time),
-		},
-		protobufDecoder: protobuf.NewProtobufDecoder(),
+		protobufDecoder:      protobuf.NewProtobufDecoder(false),
 	}
-
-	mu.Lock()
-	deviceStatuses["JSON123"] = &DeviceStatus{LastReceived: time.Now()}
-	mu.Unlock()
 
 	// Send a traditional JSON message
 	msg := ecoflow.MqttDeviceParams{
@@ -1033,18 +931,8 @@ func TestMessageHandler_ProtobufMultipleHeaders(t *testing.T) {
 		stateRefreshInterval: 300 * time.Second,
 		deviceState:          make(map[string]map[string]interface{}),
 		stateMu:              sync.RWMutex{},
-		pingStats: &PingStats{
-			successful:  make(map[string]int),
-			failed:      make(map[string]int),
-			lastAttempt: make(map[string]time.Time),
-			lastSuccess: make(map[string]time.Time),
-		},
-		protobufDecoder: protobuf.NewProtobufDecoder(),
+		protobufDecoder:      protobuf.NewProtobufDecoder(false),
 	}
-
-	mu.Lock()
-	deviceStatuses["MULTI123"] = &DeviceStatus{LastReceived: time.Now()}
-	mu.Unlock()
 
 	// Create protobuf message with multiple headers
 	pdata1, _ := json.Marshal(map[string]interface{}{"battery.level": 70.0})

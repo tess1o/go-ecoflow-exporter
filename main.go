@@ -2,315 +2,235 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/go-redis/redis/v8"
-	"github.com/tess1o/go-ecoflow"
-	"log"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
-	"strings"
 	"syscall"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/tess1o/go-ecoflow"
 )
 
-// generic
-const (
-	defaultMetricPrefix = "ecoflow"
-	defaultInterval     = 30
-	defaultExporterType = "rest"
-)
+const shutdownTimeout = 10 * time.Second
 
-// prometheus
-const (
-	defaultMetricsPort             = "2112"
-	defaultOfflineThresholdSeconds = 60
-)
-
-// mqtt
-const (
-	defaultPingIntervalSeconds         = 20
-	defaultStateRefreshIntervalSeconds = 300 // 5 minutes
-)
-
-// timescaledb
-const (
-	timescaleDbSource = "file://migrations/timescale"
-)
-
-// redis
-const (
-	defaultRedisUrl = "localhost:6379"
-	defaultRedisDb  = 0
-)
-
-//errors
-
-var (
-	accessTokenMandatoryErr   = errors.New("ECOFLOW_ACCESS_KEY and ECOFLOW_SECRET_KEY are mandatory")
-	emailPasswordMandatoryErr = errors.New("ECOFLOW_EMAIL and ECOFLOW_PASSWORD are mandatory")
-	devicesMandatoryErr       = errors.New("either ECOFLOW_DEVICES_PRETTY_NAMES or ECOFLOW_DEVICES must be provided")
-)
-
-type Shutdownable interface {
-	Close(ctx context.Context)
+// Exporter collects device parameters and passes them to the metric handlers
+type Exporter interface {
+	// Run blocks until ctx is cancelled or the exporter cannot continue
+	Run(ctx context.Context) error
+	// Health returns an error when the exporter is not able to collect data
+	Health() error
 }
 
 func main() {
-	setLoggerLevel()
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		os.Exit(runHealthcheck())
+	}
 
-	slog.Info("Starting the exporter...")
-	metricPrefix := getStringOrDefault("METRIC_PREFIX", defaultMetricPrefix)
-
-	var handlers []MetricHandler
-	handlers = enablePrometheus(metricPrefix, handlers)
-	handlers = enableTimescaleDb(metricPrefix, handlers)
-	handlers = enableRedis(metricPrefix, handlers)
-
-	if len(handlers) == 0 {
-		slog.Error("No metric handlers enabled. Make sure at least one metric handle is enabled: " +
-			"PROMETHEUS_ENABLED=true or TIMESCALE_ENABLED=true or REDIS_ENABLED=true")
+	setupLogger(nil)
+	if err := run(); err != nil {
+		slog.Error("Exporter failed", "error", err)
 		os.Exit(1)
 	}
-
-	done := make(chan bool, 1)
-
-	setupGracefulShutdown(handlers, done)
-
-	exporterType := getStringOrDefault("EXPORTER_TYPE", defaultExporterType)
-	switch exporterType {
-	case "rest":
-		err := createAndStartRestExporter(handlers)
-		if err != nil {
-			slog.Error("Unable to start rest exporter", "error", err)
-			return
-		}
-	case "mqtt":
-		err := createAndStartMqttExporter(handlers)
-		if err != nil {
-			slog.Error("Unable to start mqtt exporter", "error", err)
-			return
-		}
-	default:
-		slog.Error("Unknown exporter type. Supported types: rest, mqtt")
-		return
-	}
-
-	<-done
 	slog.Info("Application has been stopped")
 }
 
-func createAndStartMqttExporter(handlers []MetricHandler) error {
-	email := os.Getenv("ECOFLOW_EMAIL")
-	password := os.Getenv("ECOFLOW_PASSWORD")
-	if email == "" || password == "" {
-		return emailPasswordMandatoryErr
-	}
-
-	offlineThreshold := getIntOrDefault("MQTT_DEVICE_OFFLINE_THRESHOLD_SECONDS", defaultOfflineThresholdSeconds)
-	pingInterval := getIntOrDefault("MQTT_PING_INTERVAL_SECONDS", defaultPingIntervalSeconds)
-	stateRefreshInterval := getIntOrDefault("MQTT_STATE_REFRESH_INTERVAL_SECONDS", defaultStateRefreshIntervalSeconds)
-
-	devicesList, err := getDeviceMapping()
-
-	if err != nil {
-		return err
-	}
-	if len(devicesList) == 0 {
-		return devicesMandatoryErr
-	}
-
-	exporter, err := NewMqttMetricsExporter(
-		email,
-		password,
-		devicesList,
-		time.Second*time.Duration(offlineThreshold),
-		time.Second*time.Duration(pingInterval),
-		time.Second*time.Duration(stateRefreshInterval),
-		handlers...)
-
+func run() error {
+	slog.Info("Starting the exporter...")
+	cfg, err := LoadConfig(nil)
 	if err != nil {
 		return err
 	}
 
-	slog.Info("MQTT exporter configuration",
-		"offline_threshold", offlineThreshold,
-		"ping_interval", pingInterval,
-		"state_refresh_interval", stateRefreshInterval)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
-	go exporter.ExportMetrics()
-	return nil
-}
-
-func createAndStartRestExporter(handlers []MetricHandler) error {
-	interval := getIntOrDefault("SCRAPING_INTERVAL", defaultInterval)
-
-	accessKey := os.Getenv("ECOFLOW_ACCESS_KEY")
-	secretKey := os.Getenv("ECOFLOW_SECRET_KEY")
-
-	if accessKey == "" || secretKey == "" {
-		return accessTokenMandatoryErr
+	var telemetry *Telemetry
+	if cfg.Prometheus.Enabled {
+		telemetry = NewTelemetry(cfg.MetricPrefix, prometheus.DefaultRegisterer)
 	}
-	client := ecoflow.NewEcoflowClient(accessKey, secretKey)
 
-	mapping, err := getDeviceMapping()
+	handlers, prom, err := createHandlers(ctx, cfg, telemetry)
+	defer closeHandlers(handlers)
 	if err != nil {
 		return err
 	}
 
-	exporter := NewRestMetricsExporter(client, time.Duration(interval)*time.Second, mapping, handlers...)
-	go exporter.ExportMetrics()
-	return nil
-}
-
-// get the devices mapping, where the key is a device serial number and the value is
-// either the pretty name (specified in ECOFLOW_DEVICES_PRETTY_NAMES) or SN itself taken from ECOFLOW_DEVICES
-func getDeviceMapping() (map[string]string, error) {
-	var mapping = make(map[string]string)
-	prettyNames := os.Getenv("ECOFLOW_DEVICES_PRETTY_NAMES")
-	// we have pretty names specified, so will add them to the mapping
-	if len(prettyNames) != 0 {
-		err := json.Unmarshal([]byte(prettyNames), &mapping)
-		if err != nil {
-			return nil, fmt.Errorf("unable to parse device mapping, make sure it has format {\"R33XXXXXXXXX\":\"My Delta 2\", \"R33YYYYY\":\"Delta Pro backup\"}. Original error: %w\n", err)
-		}
+	server, err := startHTTPServer(cfg, prom)
+	if err != nil {
+		return err
+	}
+	if server != nil {
+		defer closeWithTimeout(server)
 	}
 
-	devices := os.Getenv("ECOFLOW_DEVICES")
-
-	//no devices are specified, will return either empty map or whatever was specified in ECOFLOW_DEVICES_PRETTY_NAMES
-	if len(devices) == 0 {
-		return mapping, nil
+	exporter, err := createExporter(cfg, telemetry, handlers)
+	if err != nil {
+		return err
+	}
+	if server != nil {
+		server.SetHealthCheck(func() error { return health(exporter, handlers) })
 	}
 
-	// the ECOFLOW_DEVICES is not empty, so will add them to the mapping
-	devicesList := strings.Split(devices, ",")
-
-	for _, device := range devicesList {
-		if _, exists := mapping[device]; !exists {
-			mapping[device] = device
-		}
-	}
-
-	return mapping, nil
-}
-
-func enableTimescaleDb(metricPrefix string, handlers []MetricHandler) []MetricHandler {
-	if isOptionEnabled("TIMESCALE_ENABLED") {
-		timescaleUrl := os.Getenv("TIMESCALE_URL")
-		if timescaleUrl == "" {
-			log.Fatal("TIMESCALE_URL is mandatory if TIMESCALE_ENABLED is true")
-		}
-
-		timescaleExporter := NewTimescaleExporter(&TimescaleExporterConfig{
-			Prefix:             metricPrefix,
-			TimescaleUrl:       timescaleUrl,
-			MigrationSourceUrl: timescaleDbSource,
-		})
-
-		handlers = append(handlers, timescaleExporter)
-	}
-	return handlers
-}
-
-func enableRedis(prefix string, handlers []MetricHandler) []MetricHandler {
-	if isOptionEnabled("REDIS_ENABLED") {
-		config := &redis.Options{
-			Addr: getStringOrDefault("REDIS_URL", defaultRedisUrl),
-			DB:   getIntOrDefault("REDIS_DB", defaultRedisDb),
-		}
-
-		redisUser, exists := os.LookupEnv("REDIS_USER")
-		if exists {
-			config.Username = redisUser
-		}
-		redisPassword, exists := os.LookupEnv("REDIS_PASSWORD")
-		if exists {
-			config.Password = redisPassword
-		}
-
-		redisExporter := NewRedisExporter(&RedisExporterConfig{
-			Prefix:      prefix,
-			RedisConfig: config,
-		})
-		handlers = append(handlers, redisExporter)
-	}
-
-	return handlers
-}
-
-func enablePrometheus(metricPrefix string, handlers []MetricHandler) []MetricHandler {
-	if isOptionEnabled("PROMETHEUS_ENABLED") {
-		port := getStringOrDefault("PROMETHEUS_PORT", defaultMetricsPort)
-		promExp := NewPrometheusExporter(&PrometheusConfig{
-			Prefix:     metricPrefix,
-			ServerPort: port,
-		})
-		handlers = append(handlers, promExp)
-	}
-	return handlers
-}
-
-func setupGracefulShutdown(handlers []MetricHandler, done chan bool) {
-	// Create a channel to listen for OS signals
-	signalChan := make(chan os.Signal, 1)
-	signal.Notify(signalChan, os.Interrupt, syscall.SIGTERM)
-
-	// Goroutine to handle shutdown
-	go func() {
-		<-signalChan
+	err = exporter.Run(ctx)
+	if ctx.Err() != nil {
 		slog.Info("Received shutdown signal")
+	}
+	return err
+}
 
-		// Create a context with a timeout to allow outstanding requests to complete
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		for _, shutdownable := range handlers {
-			s, ok := shutdownable.(Shutdownable)
-			if ok {
-				s.Close(ctx)
-			}
+// startHTTPServer serves /healthz, and /metrics when Prometheus is enabled. Without Prometheus the server
+// only provides the health check, so a busy port is reported but does not stop the exporter.
+func startHTTPServer(cfg *Config, prom *PrometheusExporter) (*HTTPServer, error) {
+	var metrics http.Handler
+	if prom != nil {
+		metrics = prom.Handler()
+	}
+	server, err := NewHTTPServer(cfg.Prometheus.Port, metrics)
+	if err != nil {
+		if cfg.Prometheus.Enabled {
+			return nil, fmt.Errorf("unable to start prometheus exporter: %w", err)
 		}
-		done <- true
-	}()
-}
-
-func setLoggerLevel() {
-	debugEnabled := os.Getenv("DEBUG_ENABLED")
-	if debugEnabled == "true" || debugEnabled == "1" {
-		slog.SetLogLoggerLevel(slog.LevelDebug)
-	} else {
-		slog.SetLogLoggerLevel(slog.LevelInfo)
+		slog.Warn("Unable to start the health check server", "error", err)
+		return nil, nil
 	}
+	return server, nil
 }
 
-func getStringOrDefault(key, def string) string {
-	val, exists := os.LookupEnv(key)
-	if exists {
-		return val
+// health combines the health of the exporter and the metric handlers
+func health(exporter Exporter, handlers []MetricHandler) error {
+	errs := []error{exporter.Health()}
+	for _, h := range handlers {
+		if c, ok := h.(HealthChecker); ok {
+			errs = append(errs, c.Health())
+		}
 	}
-	return def
+	return errors.Join(errs...)
 }
 
-func getIntOrDefault(key string, def int) int {
-	val, exists := os.LookupEnv(key)
-	if exists {
-		intVal, err := strconv.Atoi(val)
+// createHandlers creates the enabled metric handlers, each behind its own queue
+func createHandlers(ctx context.Context, cfg *Config, telemetry *Telemetry) ([]MetricHandler, *PrometheusExporter, error) {
+	var handlers []MetricHandler
+	queue := func(name string, h MetricHandler, minWriteInterval time.Duration) {
+		var handler MetricHandler = NewQueuedHandler(name, h, QueueOptions{
+			Size:           cfg.HandlerQueueSize,
+			Timeout:        cfg.HandlerTimeout,
+			Telemetry:      telemetry,
+			UnhealthyAfter: cfg.HandlerUnhealthyAfter,
+		})
+		if minWriteInterval > 0 {
+			slog.Info("Writes are throttled", "handler", name, "min_write_interval", minWriteInterval.String())
+			handler = NewThrottledHandler(handler, minWriteInterval)
+		}
+		handlers = append(handlers, handler)
+	}
+
+	var prom *PrometheusExporter
+	if cfg.Prometheus.Enabled {
+		var err error
+		prom, err = NewPrometheusExporter(&PrometheusConfig{
+			Prefix:    cfg.MetricPrefix,
+			MetricTTL: cfg.Prometheus.MetricTTL,
+		})
 		if err != nil {
-			return def
+			return handlers, nil, fmt.Errorf("unable to start prometheus exporter: %w", err)
 		}
-		return intVal
+		queue("prometheus", prom, 0)
 	}
-	return def
+
+	if cfg.Timescale.Enabled {
+		timescale, err := NewTimescaleExporter(ctx, &TimescaleExporterConfig{
+			Prefix:             cfg.MetricPrefix,
+			TimescaleUrl:       cfg.Timescale.Url,
+			MigrationSourceUrl: cfg.Timescale.MigrationsUrl,
+			CompressionAfter:   cfg.Timescale.CompressionAfter,
+			Retention:          cfg.Timescale.Retention,
+		})
+		if err != nil {
+			return handlers, prom, fmt.Errorf("unable to start timescale exporter: %w", err)
+		}
+		queue("timescale", timescale, cfg.Timescale.MinWriteInterval)
+	}
+
+	if cfg.Redis.Enabled {
+		queue("redis", NewRedisExporter(&RedisExporterConfig{
+			Prefix:      cfg.MetricPrefix,
+			RedisConfig: cfg.Redis.Options,
+			Retention:   cfg.Redis.Retention,
+			TimestampMs: cfg.Redis.TimestampMs,
+		}), cfg.Redis.MinWriteInterval)
+	}
+	return handlers, prom, nil
 }
 
-func isOptionEnabled(key string) bool {
-	val, exists := os.LookupEnv(key)
-	if exists && (val == "1" || val == "true") {
-		return true
+func closeHandlers(handlers []MetricHandler) {
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	for _, h := range handlers {
+		if s, ok := h.(Shutdownable); ok {
+			s.Close(ctx)
+		}
 	}
-	return false
+}
+
+func closeWithTimeout(s Shutdownable) {
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	s.Close(ctx)
+}
+
+func createExporter(cfg *Config, telemetry *Telemetry, handlers []MetricHandler) (Exporter, error) {
+	switch cfg.ExporterType {
+	case "mqtt":
+		exporter, err := NewMqttMetricsExporter(MqttExporterConfig{
+			Email:                cfg.Mqtt.Email,
+			Password:             cfg.Mqtt.Password,
+			Devices:              cfg.Devices,
+			OfflineThreshold:     cfg.Mqtt.OfflineThreshold,
+			PingInterval:         cfg.Mqtt.PingInterval,
+			StateRefreshInterval: cfg.Mqtt.StateRefreshInterval,
+			ProtobufDebug:        cfg.ProtobufDebug,
+			Telemetry:            telemetry,
+		}, handlers...)
+		if err != nil {
+			return nil, fmt.Errorf("unable to start mqtt exporter: %w", err)
+		}
+		slog.Info("MQTT exporter configuration",
+			"offline_threshold", cfg.Mqtt.OfflineThreshold,
+			"ping_interval", cfg.Mqtt.PingInterval,
+			"state_refresh_interval", cfg.Mqtt.StateRefreshInterval)
+		return exporter, nil
+	default:
+		client := ecoflow.NewEcoflowClient(cfg.Rest.AccessKey, cfg.Rest.SecretKey,
+			ecoflow.WithHttpClient(&http.Client{Timeout: restRequestTimeout}))
+		return NewRestMetricsExporter(client, RestExporterConfig{
+			Interval:  cfg.Rest.Interval,
+			Devices:   cfg.Devices,
+			Telemetry: telemetry,
+		}, handlers...), nil
+	}
+}
+
+// runHealthcheck is used by the Docker HEALTHCHECK and queries /healthz. Without Prometheus the health
+// server is optional: when nothing listens, there is nothing to ask and the check succeeds.
+func runHealthcheck() int {
+	e := newEnv(nil)
+	client := http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get("http://127.0.0.1:" + e.str("PROMETHEUS_PORT", defaultMetricsPort) + "/healthz")
+	if err != nil {
+		if !e.bool("PROMETHEUS_ENABLED") && errors.Is(err, syscall.ECONNREFUSED) {
+			return 0
+		}
+		fmt.Fprintln(os.Stderr, "healthcheck failed:", err)
+		return 1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintln(os.Stderr, "healthcheck failed: status", resp.Status)
+		return 1
+	}
+	return 0
 }

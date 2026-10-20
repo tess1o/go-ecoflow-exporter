@@ -10,6 +10,8 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_PASSWORD}"
     volumes:
       - ./grafana:/etc/grafana/provisioning/datasources
+      - ./grafana-dashboards:/etc/grafana/provisioning/dashboards
+      - ../grafana_dashboards:/etc/grafana/dashboards/ecoflow:ro
       - grafana_data:/var/lib/grafana
 
 volumes:

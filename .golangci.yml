@@ -1,0 +1,10 @@
+version: "2"
+
+linters:
+  # errcheck, govet, ineffassign, staticcheck, unused
+  default: standard
+  exclusions:
+    generated: lax
+    presets:
+      # unchecked Close(), fmt.Fprint* and similar
+      - std-error-handling

@@ -1,0 +1,9 @@
+apiVersion: 1
+
+providers:
+  - name: ecoflow
+    folder: EcoFlow
+    type: file
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/dashboards/ecoflow

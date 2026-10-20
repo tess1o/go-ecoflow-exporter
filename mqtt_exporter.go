@@ -9,10 +9,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -20,112 +22,176 @@ import (
 	"go-ecoflow-exporter/internal/protobuf"
 )
 
-type DeviceStatus struct {
-	LastReceived time.Time
-}
-
-var (
-	deviceStatuses = make(map[string]*DeviceStatus)
-	mu             sync.Mutex
-)
-
-type PingStats struct {
-	sync.Mutex
-	successful  map[string]int       // SN -> success count
-	failed      map[string]int       // SN -> failure count
-	lastAttempt map[string]time.Time // SN -> last attempt time
-	lastSuccess map[string]time.Time // SN -> last success time
+type MqttExporterConfig struct {
+	Email    string
+	Password string
+	// Devices maps a serial number to its display name
+	Devices              map[string]string
+	OfflineThreshold     time.Duration
+	PingInterval         time.Duration
+	StateRefreshInterval time.Duration
+	// ProtobufDebug dumps protobuf messages to the log
+	ProtobufDebug bool
+	Telemetry     *Telemetry
 }
 
 type MqttMetricsExporter struct {
-	c                    *ecoflow.MqttClient
+	email                string
+	password             string
+	client               atomic.Pointer[ecoflow.MqttClient] // nil until logged in
 	devices              map[string]string
 	handlers             []MetricHandler
 	offlineThreshold     time.Duration
 	userId               string
 	pingInterval         time.Duration
 	stateRefreshInterval time.Duration
-	deviceState          map[string]map[string]interface{} // SN -> full device state
+	deviceState          map[string]map[string]any // SN -> full device state
 	stateMu              sync.RWMutex
-	pingStats            *PingStats
 	protobufDecoder      *protobuf.ProtobufDecoder // Persists to track seen devices
+	telemetry            *Telemetry
+
+	statusMu       sync.Mutex
+	lastReceived   map[string]time.Time // SN -> time of the last message
+	offlineSent    map[string]time.Time // SN -> time of the last offline update, present while the device is offline
+	reconnectDelay time.Duration        // grows while forced reconnects do not bring data back
+	nextReconnect  time.Time
+
+	pingMu     sync.Mutex
+	pingOK     map[string]int // SN -> successful keepalive pings
+	pingFailed map[string]int // SN -> failed keepalive pings
 }
 
-func NewMqttMetricsExporter(email, password string, devices map[string]string, offlineThreshold, pingInterval, stateRefreshInterval time.Duration, handlers ...MetricHandler) (*MqttMetricsExporter, error) {
+const (
+	maxReconnectDelay = 10 * time.Minute
+	loginRetryDelay   = 5 * time.Second
+	maxLoginDelay     = 5 * time.Minute
+)
+
+func NewMqttMetricsExporter(cfg MqttExporterConfig, handlers ...MetricHandler) (*MqttMetricsExporter, error) {
 	// Validate inputs
-	if email == "" || password == "" {
+	if cfg.Email == "" || cfg.Password == "" {
 		return nil, errors.New("email and password are required")
 	}
-	if len(devices) == 0 {
+	if len(cfg.Devices) == 0 {
 		return nil, errors.New("at least one device must be configured")
 	}
 	if len(handlers) == 0 {
 		return nil, errors.New("at least one metric handler is required")
 	}
-	if offlineThreshold <= 0 {
-		return nil, fmt.Errorf("offlineThreshold must be positive, got %v", offlineThreshold)
+	if cfg.OfflineThreshold <= 0 {
+		return nil, fmt.Errorf("offlineThreshold must be positive, got %v", cfg.OfflineThreshold)
 	}
-	if pingInterval <= 0 {
-		return nil, fmt.Errorf("pingInterval must be positive, got %v", pingInterval)
+	if cfg.PingInterval <= 0 {
+		return nil, fmt.Errorf("pingInterval must be positive, got %v", cfg.PingInterval)
 	}
-	if stateRefreshInterval <= 0 {
-		return nil, fmt.Errorf("stateRefreshInterval must be positive, got %v", stateRefreshInterval)
+	if cfg.StateRefreshInterval <= 0 {
+		return nil, fmt.Errorf("stateRefreshInterval must be positive, got %v", cfg.StateRefreshInterval)
 	}
-	if pingInterval > offlineThreshold {
+	if cfg.PingInterval > cfg.OfflineThreshold {
 		slog.Warn("pingInterval is greater than offlineThreshold, devices may be marked offline between pings",
-			"pingInterval", pingInterval, "offlineThreshold", offlineThreshold)
+			"pingInterval", cfg.PingInterval, "offlineThreshold", cfg.OfflineThreshold)
 	}
 
-	// Get userId first (needed for ping mechanism)
-	userId, err := getUserId(context.Background(), email, password)
+	return &MqttMetricsExporter{
+		email:                cfg.Email,
+		password:             cfg.Password,
+		devices:              cfg.Devices,
+		handlers:             handlers,
+		offlineThreshold:     cfg.OfflineThreshold,
+		pingInterval:         cfg.PingInterval,
+		stateRefreshInterval: cfg.StateRefreshInterval,
+		deviceState:          make(map[string]map[string]any),
+		protobufDecoder:      protobuf.NewProtobufDecoder(cfg.ProtobufDebug),
+		telemetry:            cfg.Telemetry,
+	}, nil
+}
+
+// login gets the user id (needed for the ping mechanism) and the MQTT connection settings
+func (m *MqttMetricsExporter) login(ctx context.Context) (*ecoflow.MqttClient, error) {
+	userId, err := getUserId(ctx, m.email, m.password)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user ID: %w", err)
 	}
-
-	exporter := &MqttMetricsExporter{
-		devices:              devices,
-		handlers:             handlers,
-		offlineThreshold:     offlineThreshold,
-		pingInterval:         pingInterval,
-		stateRefreshInterval: stateRefreshInterval,
-		userId:               userId,
-		deviceState:          make(map[string]map[string]interface{}),
-		pingStats: &PingStats{
-			successful:  make(map[string]int),
-			failed:      make(map[string]int),
-			lastAttempt: make(map[string]time.Time),
-			lastSuccess: make(map[string]time.Time),
-		},
-		protobufDecoder: protobuf.NewProtobufDecoder(),
-	}
+	m.userId = userId
 	configuration := ecoflow.MqttClientConfiguration{
-		Email:            email,
-		Password:         password,
-		OnConnect:        exporter.OnConnect,
-		OnConnectionLost: exporter.OnConnectionLost,
-		OnReconnect:      exporter.OnReconnect,
+		Email:            m.email,
+		Password:         m.password,
+		OnConnect:        m.OnConnect,
+		OnConnectionLost: m.OnConnectionLost,
+		OnReconnect:      m.OnReconnect,
 	}
-	client, err := ecoflow.NewMqttClient(context.Background(), configuration)
-	if err != nil {
-		return nil, err
-	}
-
-	exporter.c = client
-
-	return exporter, nil
+	return ecoflow.NewMqttClient(ctx, configuration)
 }
 
-func (m *MqttMetricsExporter) ExportMetrics() error {
-	err := m.c.Connect()
+// Run logs in, connects to the broker and keeps devices reporting until ctx is cancelled.
+// Login is retried, so a temporary EcoFlow outage at startup does not stop the exporter.
+func (m *MqttMetricsExporter) Run(ctx context.Context) error {
+	var client *ecoflow.MqttClient
+	err := retryWithBackoff(ctx, "log in to EcoFlow", 0, loginRetryDelay, maxLoginDelay, func() error {
+		var err error
+		client, err = m.login(ctx)
+		return err
+	})
 	if err != nil {
-		slog.Error("Unable to connect to MQTT broker")
+		if ctx.Err() != nil {
+			return nil
+		}
 		return err
 	}
-	go m.monitorDeviceStatus()
-	// Start periodic ping to keep connection alive
-	m.startPingRoutine()
+	m.client.Store(client)
+
+	token := client.Client.Connect()
+	select {
+	case <-token.Done():
+		if err := token.Error(); err != nil {
+			return fmt.Errorf("unable to connect to MQTT broker: %w", err)
+		}
+	case <-ctx.Done():
+		client.Client.Disconnect(250)
+		return nil
+	}
+
+	go m.monitorDeviceStatus(ctx)
+	go m.pingRoutine(ctx)
 	slog.Info("Started RTC time ping routine to keep devices active")
+
+	<-ctx.Done()
+	client.Client.Disconnect(250)
+	m.telemetry.SetMqttConnected(false)
 	return nil
+}
+
+// mqtt returns the MQTT client, it must only be called once Run has logged in
+func (m *MqttMetricsExporter) mqtt() *ecoflow.MqttClient {
+	return m.client.Load()
+}
+
+// Health reports an error while the exporter is not connected to the MQTT broker
+func (m *MqttMetricsExporter) Health() error {
+	c := m.mqtt()
+	if c == nil {
+		return errors.New("not logged in to EcoFlow yet")
+	}
+	if !c.Client.IsConnectionOpen() {
+		return errors.New("not connected to the EcoFlow MQTT broker")
+	}
+	return nil
+}
+
+// markReceived records that the device sent data and resets the forced reconnect backoff.
+// It reports whether the device was considered offline.
+func (m *MqttMetricsExporter) markReceived(sn string) (wasOffline bool) {
+	m.statusMu.Lock()
+	defer m.statusMu.Unlock()
+	if m.lastReceived == nil {
+		m.lastReceived = make(map[string]time.Time)
+	}
+	m.lastReceived[sn] = time.Now()
+	m.reconnectDelay = 0
+	m.nextReconnect = time.Time{}
+	_, wasOffline = m.offlineSent[sn]
+	delete(m.offlineSent, sn)
+	return wasOffline
 }
 
 func (m *MqttMetricsExporter) MessageHandler(_ mqtt.Client, msg mqtt.Message) {
@@ -143,18 +209,22 @@ func (m *MqttMetricsExporter) MessageHandler(_ mqtt.Client, msg mqtt.Message) {
 		return
 	}
 
-	mu.Lock()
-	if _, exists := deviceStatuses[serialNumber]; !exists {
-		deviceStatuses[serialNumber] = &DeviceStatus{}
+	if m.markReceived(serialNumber) {
+		slog.Info("Device is back online, requesting its full state", "device", serialNumber)
+		// not from this callback: paho must not be blocked while the request is published
+		go func() {
+			if err := m.requestLatestQuotas(serialNumber); err != nil {
+				slog.Error("Failed to request latest quotas", "error", err, "device", serialNumber)
+			}
+		}()
 	}
-	deviceStatuses[serialNumber].LastReceived = time.Now()
-	mu.Unlock()
 
 	// Detect message format and decode
 	payload := msg.Payload()
 	format := protobuf.DetectFormat(payload)
+	m.telemetry.MqttMessage(serialNumber, format.String())
 
-	var params map[string]interface{}
+	var params map[string]any
 	var err error
 
 	switch format {
@@ -163,6 +233,7 @@ func (m *MqttMetricsExporter) MessageHandler(_ mqtt.Client, msg mqtt.Message) {
 		var deviceParams ecoflow.MqttDeviceParams
 		err = json.Unmarshal(payload, &deviceParams)
 		if err != nil {
+			m.telemetry.DecodeError(serialNumber, format.String())
 			slog.Error("Unable to parse JSON message", "topic", msg.Topic(), "error", err)
 			return
 		}
@@ -175,6 +246,7 @@ func (m *MqttMetricsExporter) MessageHandler(_ mqtt.Client, msg mqtt.Message) {
 
 		params, err = m.protobufDecoder.DecodeProtobufMessage(payload)
 		if err != nil {
+			m.telemetry.DecodeError(serialNumber, format.String())
 			slog.Error("Unable to parse protobuf message",
 				"topic", msg.Topic(),
 				"device", serialNumber,
@@ -185,10 +257,8 @@ func (m *MqttMetricsExporter) MessageHandler(_ mqtt.Client, msg mqtt.Message) {
 		slog.Debug("Received protobuf device parameters", "topic", msg.Topic(), "param_count", len(params))
 
 	case protobuf.FormatUnknown:
-		previewLen := 32
-		if len(payload) < previewLen {
-			previewLen = len(payload)
-		}
+		m.telemetry.DecodeError(serialNumber, format.String())
+		previewLen := min(32, len(payload))
 		slog.Info("Unknown message format - not JSON or protobuf",
 			"topic", msg.Topic(),
 			"device", serialNumber,
@@ -206,17 +276,15 @@ func (m *MqttMetricsExporter) MessageHandler(_ mqtt.Client, msg mqtt.Message) {
 
 	// Merge incoming params with cached state
 	m.stateMu.Lock()
+	if m.deviceState == nil {
+		m.deviceState = make(map[string]map[string]any)
+	}
 	if m.deviceState[serialNumber] == nil {
-		m.deviceState[serialNumber] = make(map[string]interface{})
+		m.deviceState[serialNumber] = make(map[string]any)
 	}
-	for k, v := range params {
-		m.deviceState[serialNumber][k] = v
-	}
-	// Create a copy of the full state to pass to handlers
-	fullState := make(map[string]interface{})
-	for k, v := range m.deviceState[serialNumber] {
-		fullState[k] = v
-	}
+	maps.Copy(m.deviceState[serialNumber], params)
+	// Handlers get a copy of the full state; it is shared between them and must not be modified
+	fullState := maps.Clone(m.deviceState[serialNumber])
 	m.stateMu.Unlock()
 
 	// Skip calling handlers if we have no state (shouldn't happen but defensive)
@@ -226,21 +294,21 @@ func (m *MqttMetricsExporter) MessageHandler(_ mqtt.Client, msg mqtt.Message) {
 	}
 
 	// Pass full state (not just delta) to handlers
-	for _, handler := range m.handlers {
-		hh := handler
-		go hh.Handle(context.Background(), EcoflowDevice{
-			SN:     serialNumber,
-			Name:   getDeviceName(m.devices, serialNumber),
-			Online: 1,
-		}, fullState)
+	device := EcoflowDevice{
+		SN:     serialNumber,
+		Name:   getDeviceName(m.devices, serialNumber),
+		Online: 1,
 	}
+	m.telemetry.DeviceSeen(device)
+	dispatch(context.Background(), m.handlers, NewDeviceUpdate(device, fullState))
 }
 
 func (m *MqttMetricsExporter) OnConnect(_ mqtt.Client) {
 	slog.Info("Connected to the broker, trying to subscribe to the topics")
+	m.telemetry.SetMqttConnected(true)
 	m.initDeviceStatuses()
 	for sn, name := range m.devices {
-		err := m.c.SubscribeForParameters(sn, m.MessageHandler)
+		err := m.mqtt().SubscribeForParameters(sn, m.MessageHandler)
 		if err != nil {
 			slog.Error("Unable to subscribe for parameters", "error", err, "device", sn, "device_name", name)
 		} else {
@@ -255,61 +323,129 @@ func (m *MqttMetricsExporter) OnConnect(_ mqtt.Client) {
 
 func (m *MqttMetricsExporter) OnConnectionLost(_ mqtt.Client, err error) {
 	slog.Error("Lost connection to the broker", "error", err)
+	m.telemetry.SetMqttConnected(false)
 }
 
 func (m *MqttMetricsExporter) OnReconnect(_ mqtt.Client, _ *mqtt.ClientOptions) {
 	slog.Info("Trying to reconnect to the broker...")
 }
 
-func (m *MqttMetricsExporter) monitorDeviceStatus() {
+// monitorDeviceStatus reports devices that did not send data within the offline threshold as offline,
+// and reconnects to the broker when no device sends data (the broker sometimes stops delivering messages,
+// for example after the EcoFlow mobile app was opened and closed).
+// It checks four times per threshold, but sends the offline update of a device once per threshold.
+func (m *MqttMetricsExporter) monitorDeviceStatus(ctx context.Context) {
+	ticker := time.NewTicker(max(m.offlineThreshold/4, 100*time.Millisecond))
+	defer ticker.Stop()
 	for {
-		time.Sleep(m.offlineThreshold)
-		if !m.c.Client.IsConnected() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if !m.mqtt().Client.IsConnected() {
 			slog.Debug("MQTT client is not connected to the broker, we don't know the devices statuses...")
 			continue
 		}
 
-		var offlineDevicesCount = 0
-
-		// Lock while reading deviceStatuses to prevent race condition
-		mu.Lock()
-		for sn, status := range deviceStatuses {
-			if time.Since(status.LastReceived) > m.offlineThreshold {
-				offlineDevicesCount++
-				// Call handlers outside the critical section by copying needed data
-				deviceSN := sn
-				deviceName := getDeviceName(m.devices, sn)
-
-				for _, handler := range m.handlers {
-					hh := handler
-					go hh.Handle(context.Background(), EcoflowDevice{
-						SN:     deviceSN,
-						Name:   deviceName,
-						Online: 0,
-					}, map[string]interface{}{})
-				}
-			}
+		offline := m.offlineDevices()
+		for _, sn := range m.offlineUpdatesDue(offline) {
+			device := EcoflowDevice{SN: sn, Name: getDeviceName(m.devices, sn), Online: 0}
+			dispatch(ctx, m.handlers, NewDeviceUpdate(device, map[string]any{}))
 		}
-		mu.Unlock()
 
 		// If true it means that either all devices are offline or we don't receive any messages from MQTT broker.
 		// Either way we need to reconnect the client
-		if len(m.devices) == offlineDevicesCount && offlineDevicesCount > 0 {
-			slog.Error("All devices are either offline or we don't receive messages from MQTT topic, we'll try to reconnect")
-			m.c.Client.Disconnect(250)
-			time.Sleep(5 * time.Second)
-			m.c.Client.Connect()
+		if len(offline) > 0 && len(offline) == len(m.devices) && m.reconnectDue() {
+			m.forceReconnect(ctx)
 		}
 	}
 }
 
+// offlineDevices returns the serial numbers of devices that did not send data within the offline threshold
+func (m *MqttMetricsExporter) offlineDevices() []string {
+	m.statusMu.Lock()
+	defer m.statusMu.Unlock()
+	var offline []string
+	for sn, last := range m.lastReceived {
+		if time.Since(last) > m.offlineThreshold {
+			offline = append(offline, sn)
+		}
+	}
+	return offline
+}
+
+// offlineUpdatesDue returns the offline devices whose last offline update is at least a threshold old,
+// and records that an update is sent now
+func (m *MqttMetricsExporter) offlineUpdatesDue(offline []string) []string {
+	m.statusMu.Lock()
+	defer m.statusMu.Unlock()
+	if m.offlineSent == nil {
+		m.offlineSent = make(map[string]time.Time)
+	}
+	now := time.Now()
+	var due []string
+	for _, sn := range offline {
+		if last, sent := m.offlineSent[sn]; !sent || now.Sub(last) >= m.offlineThreshold {
+			m.offlineSent[sn] = now
+			due = append(due, sn)
+		}
+	}
+	return due
+}
+
+// reconnectDue reports whether a forced reconnect may run now. Consecutive reconnects that do not bring
+// any data back are spaced out exponentially (devices may simply be switched off).
+func (m *MqttMetricsExporter) reconnectDue() bool {
+	m.statusMu.Lock()
+	defer m.statusMu.Unlock()
+	now := time.Now()
+	if now.Before(m.nextReconnect) {
+		slog.Debug("All devices are offline, next reconnect attempt scheduled", "at", m.nextReconnect)
+		return false
+	}
+	m.reconnectDelay = min(max(2*m.reconnectDelay, m.offlineThreshold), maxReconnectDelay)
+	m.nextReconnect = now.Add(m.reconnectDelay)
+	return true
+}
+
+func (m *MqttMetricsExporter) forceReconnect(ctx context.Context) {
+	slog.Error("All devices are either offline or we don't receive messages from MQTT topic, we'll try to reconnect")
+	m.telemetry.MqttForcedReconnect()
+	m.mqtt().Client.Disconnect(250)
+	m.telemetry.SetMqttConnected(false)
+
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(5 * time.Second):
+	}
+
+	token := m.mqtt().Client.Connect()
+	select {
+	case <-ctx.Done():
+	case <-token.Done():
+		if err := token.Error(); err != nil {
+			slog.Error("Unable to reconnect to the MQTT broker", "error", err)
+		}
+	case <-time.After(30 * time.Second):
+		slog.Warn("Reconnect to the MQTT broker is taking long, it continues in the background")
+	}
+}
+
 func (m *MqttMetricsExporter) initDeviceStatuses() {
-	mu.Lock()
-	defer mu.Unlock()
-	pastTime := time.Now().Add(-m.offlineThreshold * 2) // Set to a time far in the past
-	// Iterate over keys (serial numbers), not values (device names)
+	m.statusMu.Lock()
+	defer m.statusMu.Unlock()
+	if m.lastReceived == nil {
+		m.lastReceived = make(map[string]time.Time)
+	}
+	// Unknown until the first message arrives: a device that sends nothing within the offline threshold
+	// (counted from the connection) is offline
+	now := time.Now()
 	for sn := range m.devices {
-		deviceStatuses[sn] = &DeviceStatus{LastReceived: pastTime}
+		if _, seen := m.lastReceived[sn]; !seen {
+			m.lastReceived[sn] = now
+		}
 	}
 }
 
@@ -399,12 +535,12 @@ func getUserId(ctx context.Context, email, password string) (string, error) {
 
 // requestLatestQuotas requests the device to start pushing data (initial data request)
 func (m *MqttMetricsExporter) requestLatestQuotas(sn string) error {
-	message := map[string]interface{}{
+	message := map[string]any{
 		"id":          strconv.FormatInt(time.Now().UnixMilli(), 10),
 		"version":     "1.1",
 		"from":        "Android",
 		"operateType": "latestQuotas",
-		"params":      map[string]interface{}{},
+		"params":      map[string]any{},
 	}
 
 	payload, err := json.Marshal(message)
@@ -413,15 +549,17 @@ func (m *MqttMetricsExporter) requestLatestQuotas(sn string) error {
 	}
 
 	topic := fmt.Sprintf("/app/%s/%s/thing/property/get", m.userId, sn)
-	token := m.c.Client.Publish(topic, 1, false, payload)
+	token := m.mqtt().Client.Publish(topic, 1, false, payload)
 
 	// Wait with timeout
 	if !token.WaitTimeout(5 * time.Second) {
-		return errors.New("publish timeout for latestQuotas request")
+		err = errors.New("publish timeout for latestQuotas request")
+	} else if token.Error() != nil {
+		err = fmt.Errorf("failed to request latest quotas: %w", token.Error())
 	}
-
-	if token.Error() != nil {
-		return fmt.Errorf("failed to request latest quotas: %w", token.Error())
+	m.telemetry.MqttPing(sn, "state_refresh", err)
+	if err != nil {
+		return err
 	}
 
 	slog.Info("Requested latest quotas from device", "device", sn, "topic", topic)
@@ -431,18 +569,12 @@ func (m *MqttMetricsExporter) requestLatestQuotas(sn string) error {
 // sendRtcTimePing sends a setRtcTime command to keep the connection alive
 func (m *MqttMetricsExporter) sendRtcTimePing(sn string) error {
 	now := time.Now()
-
-	// Track attempt
-	m.pingStats.Lock()
-	m.pingStats.lastAttempt[sn] = now
-	m.pingStats.Unlock()
-
-	message := map[string]interface{}{
+	message := map[string]any{
 		"from":        "Android",
-		"id":          strconv.FormatInt(time.Now().UnixMilli(), 10),
+		"id":          strconv.FormatInt(now.UnixMilli(), 10),
 		"moduleType":  2,
 		"operateType": "setRtcTime",
-		"params": map[string]interface{}{
+		"params": map[string]any{
 			"min":   now.Minute(),
 			"day":   now.Day(),
 			"week":  int(now.Weekday()),
@@ -456,106 +588,97 @@ func (m *MqttMetricsExporter) sendRtcTimePing(sn string) error {
 
 	payload, err := json.Marshal(message)
 	if err != nil {
-		m.recordPingFailure(sn, err)
-		return fmt.Errorf("failed to marshal ping: %w", err)
-	}
-
-	topic := fmt.Sprintf("/app/%s/%s/thing/property/set", m.userId, sn)
-	token := m.c.Client.Publish(topic, 1, false, payload)
-
-	// Wait with timeout
-	if !token.WaitTimeout(5 * time.Second) {
-		err := errors.New("publish timeout")
-		m.recordPingFailure(sn, err)
+		err = fmt.Errorf("failed to marshal ping: %w", err)
+		m.recordPing(sn, err)
 		return err
 	}
 
-	if token.Error() != nil {
-		m.recordPingFailure(sn, token.Error())
-		return token.Error()
-	}
+	topic := fmt.Sprintf("/app/%s/%s/thing/property/set", m.userId, sn)
+	token := m.mqtt().Client.Publish(topic, 1, false, payload)
 
-	m.recordPingSuccess(sn)
+	// Wait with timeout
+	if !token.WaitTimeout(5 * time.Second) {
+		err = errors.New("publish timeout")
+	} else {
+		err = token.Error()
+	}
+	m.recordPing(sn, err)
+	if err != nil {
+		return err
+	}
 	slog.Debug("Sent RTC time ping", "device", sn, "topic", topic)
 	return nil
 }
 
-// recordPingSuccess records a successful ping for statistics
-func (m *MqttMetricsExporter) recordPingSuccess(sn string) {
-	m.pingStats.Lock()
-	defer m.pingStats.Unlock()
-	m.pingStats.successful[sn]++
-	m.pingStats.lastSuccess[sn] = time.Now()
-}
+// recordPing counts the keepalive result and logs a warning when the failure rate is high
+func (m *MqttMetricsExporter) recordPing(sn string, err error) {
+	m.telemetry.MqttPing(sn, "keepalive", err)
+	m.pingMu.Lock()
+	defer m.pingMu.Unlock()
+	if m.pingOK == nil {
+		m.pingOK = make(map[string]int)
+		m.pingFailed = make(map[string]int)
+	}
+	if err == nil {
+		m.pingOK[sn]++
+		return
+	}
+	m.pingFailed[sn]++
 
-// recordPingFailure records a failed ping and logs warning if failure rate is high
-func (m *MqttMetricsExporter) recordPingFailure(sn string, err error) {
-	m.pingStats.Lock()
-	defer m.pingStats.Unlock()
-	m.pingStats.failed[sn]++
-
-	total := m.pingStats.successful[sn] + m.pingStats.failed[sn]
-	if total > 0 {
-		failRate := float64(m.pingStats.failed[sn]) / float64(total)
-		// Log only if failure rate is concerning (>10%)
-		if failRate > 0.1 {
-			slog.Warn("High ping failure rate detected",
-				"device", sn,
-				"failed", m.pingStats.failed[sn],
-				"successful", m.pingStats.successful[sn],
-				"failure_rate", fmt.Sprintf("%.1f%%", failRate*100),
-				"error", err)
-		}
+	failed, total := m.pingFailed[sn], m.pingOK[sn]+m.pingFailed[sn]
+	// Log only if failure rate is concerning (>10%)
+	if failRate := float64(failed) / float64(total); failRate > 0.1 {
+		slog.Warn("High ping failure rate detected",
+			"device", sn,
+			"failed", failed,
+			"successful", m.pingOK[sn],
+			"failure_rate", fmt.Sprintf("%.1f%%", failRate*100),
+			"error", err)
 	}
 }
 
-// startPingRoutine starts a goroutine that sends periodic pings to all devices
-// and periodically requests full state refresh
-func (m *MqttMetricsExporter) startPingRoutine() {
-	go func() {
-		ticker := time.NewTicker(m.pingInterval)
-		defer ticker.Stop()
+// pingRoutine sends periodic pings to all devices and periodically requests a full state refresh
+func (m *MqttMetricsExporter) pingRoutine(ctx context.Context) {
+	ticker := time.NewTicker(m.pingInterval)
+	defer ticker.Stop()
 
-		tickCount := 0
-		// Calculate how many pings between state refreshes
-		ticksPerRefresh := int(m.stateRefreshInterval / m.pingInterval)
-		if ticksPerRefresh < 1 {
-			ticksPerRefresh = 1
+	tickCount := 0
+	// Calculate how many pings between state refreshes
+	ticksPerRefresh := max(int(m.stateRefreshInterval/m.pingInterval), 1)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if !m.mqtt().Client.IsConnected() {
+			slog.Debug("MQTT client not connected, skipping ping")
+			continue
 		}
 
-		for range ticker.C {
-			if !m.c.Client.IsConnected() {
-				slog.Debug("MQTT client not connected, skipping ping")
-				continue
-			}
+		tickCount++
+		// Every Nth tick, do a full state refresh instead of ping
+		useStateRefresh := tickCount%ticksPerRefresh == 0
 
-			tickCount++
-
-			// Every Nth tick, do a full state refresh instead of ping
-			useStateRefresh := (tickCount % ticksPerRefresh) == 0
-
-			// Ping all devices in parallel
-			var wg sync.WaitGroup
-			for sn, name := range m.devices {
-				wg.Add(1)
-				go func(serialNum, deviceName string) {
-					defer wg.Done()
-					if useStateRefresh {
-						slog.Debug("Sending state refresh", "device", serialNum, "device_name", deviceName)
-						if err := m.requestLatestQuotas(serialNum); err != nil {
-							slog.Error("State refresh failed", "error", err, "device", serialNum, "device_name", deviceName)
-						}
-					} else {
-						slog.Debug("Sending keepalive ping", "device", serialNum, "device_name", deviceName)
-						if err := m.sendRtcTimePing(serialNum); err != nil {
-							// Error already logged in sendRtcTimePing via recordPingFailure
-							slog.Debug("Ping failed", "error", err, "device", serialNum)
-						}
+		// Ping all devices in parallel and wait for all of them before the next tick
+		var wg sync.WaitGroup
+		for sn, name := range m.devices {
+			wg.Go(func() {
+				if useStateRefresh {
+					slog.Debug("Sending state refresh", "device", sn, "device_name", name)
+					if err := m.requestLatestQuotas(sn); err != nil {
+						slog.Error("State refresh failed", "error", err, "device", sn, "device_name", name)
 					}
-				}(sn, name)
-			}
-			// Wait for all pings/refreshes to complete before next tick
-			wg.Wait()
+				} else {
+					slog.Debug("Sending keepalive ping", "device", sn, "device_name", name)
+					if err := m.sendRtcTimePing(sn); err != nil {
+						// Error already logged in sendRtcTimePing via recordPing
+						slog.Debug("Ping failed", "error", err, "device", sn)
+					}
+				}
+			})
 		}
-	}()
+		wg.Wait()
+	}
 }

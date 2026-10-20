@@ -2,16 +2,16 @@ DB_URL=postgresql://postgres:postgres@timescaledb.docker-compose.orb.local:5432/
 DOCKER_IMAGE_NAME = tess1o/go-ecoflow-exporter
 
 migrateup:
-	migrate -path db/migration -database "$(DB_URL)" -verbose up
+	migrate -path migrations/timescale -database "$(DB_URL)" -verbose up
 
 migrateup1:
-	migrate -path db/migration -database "$(DB_URL)" -verbose up 1
+	migrate -path migrations/timescale -database "$(DB_URL)" -verbose up 1
 
 migratedown:
-	migrate -path db/migration -database "$(DB_URL)" -verbose down
+	migrate -path migrations/timescale -database "$(DB_URL)" -verbose down
 
 migratedown1:
-	migrate -path db/migration -database "$(DB_URL)" -verbose down 1
+	migrate -path migrations/timescale -database "$(DB_URL)" -verbose down 1
 
 new_migration:
 	migrate create -ext sql -dir migrations/timescale -seq $(name)
@@ -51,4 +51,4 @@ stop-exporter:
 exporter-logs:
 	docker logs -f go_ecoflow_exporter
 
-.PHONY: build push build-push migrateup migrateup1 migratedown migratedown1 new_migration start-grafana start-prometheus start-timescale start-redis start-exporter-local start-exporter-remote stop-all
+.PHONY: build push build-push migrateup migrateup1 migratedown migratedown1 new_migration start-grafana start-prometheus start-timescale start-redis start-exporter-local start-exporter-remote stop-exporter exporter-logs

@@ -192,7 +192,7 @@ func TestDecodeProtobufMessage_NoEncryption(t *testing.T) {
 		t.Fatalf("Failed to marshal protobuf: %v", err)
 	}
 
-	decoder := NewProtobufDecoder()
+	decoder := NewProtobufDecoder(false)
 	params, err := decoder.DecodeProtobufMessage(payload)
 	if err != nil {
 		t.Fatalf("DecodeProtobufMessage() error = %v", err)
@@ -239,7 +239,7 @@ func TestDecodeProtobufMessage_WithEncryption(t *testing.T) {
 		t.Fatalf("Failed to marshal protobuf: %v", err)
 	}
 
-	decoder := NewProtobufDecoder()
+	decoder := NewProtobufDecoder(false)
 	params, err := decoder.DecodeProtobufMessage(payload)
 	if err != nil {
 		t.Fatalf("DecodeProtobufMessage() error = %v", err)
@@ -281,7 +281,7 @@ func TestDecodeProtobufMessage_MultipleHeaders(t *testing.T) {
 		t.Fatalf("Failed to marshal protobuf: %v", err)
 	}
 
-	decoder := NewProtobufDecoder()
+	decoder := NewProtobufDecoder(false)
 	params, err := decoder.DecodeProtobufMessage(payload)
 	if err != nil {
 		t.Fatalf("DecodeProtobufMessage() error = %v", err)
@@ -309,7 +309,7 @@ func TestDecodeProtobufMessage_EmptyMessage(t *testing.T) {
 		t.Fatalf("Failed to marshal protobuf: %v", err)
 	}
 
-	decoder := NewProtobufDecoder()
+	decoder := NewProtobufDecoder(false)
 	_, err = decoder.DecodeProtobufMessage(payload)
 	if err == nil {
 		t.Error("DecodeProtobufMessage() should error on empty headers")
@@ -317,7 +317,7 @@ func TestDecodeProtobufMessage_EmptyMessage(t *testing.T) {
 }
 
 func TestDecodeProtobufMessage_InvalidProtobuf(t *testing.T) {
-	decoder := NewProtobufDecoder()
+	decoder := NewProtobufDecoder(false)
 	_, err := decoder.DecodeProtobufMessage([]byte("not a protobuf message"))
 	if err == nil {
 		t.Error("DecodeProtobufMessage() should error on invalid protobuf")
@@ -342,7 +342,7 @@ func TestDecodeProtobufMessage_NonJSONPdata(t *testing.T) {
 		t.Fatalf("Failed to marshal protobuf: %v", err)
 	}
 
-	decoder := NewProtobufDecoder()
+	decoder := NewProtobufDecoder(false)
 	_, err = decoder.DecodeProtobufMessage(payload)
 	if err == nil {
 		t.Error("DecodeProtobufMessage() should error when no params are extracted")
@@ -350,7 +350,7 @@ func TestDecodeProtobufMessage_NonJSONPdata(t *testing.T) {
 }
 
 func TestLogUnknownCommand(t *testing.T) {
-	decoder := NewProtobufDecoder()
+	decoder := NewProtobufDecoder(false)
 
 	// First call should log at INFO (no assertion, just checking no panic)
 	testErr := fmt.Errorf("test parse error")

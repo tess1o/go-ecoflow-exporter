@@ -14,6 +14,14 @@ Additionally, there is a key/value to store device SN and last access date:
 `device:last_access:%device_serial_number%`
 This can be useful when declaring variables in Grafana to fetch all devices you have
 
+New time series are created with the labels `serial_number`, `device` and `metric`, so they can be queried
+together, for example `TS.MRANGE - + FILTER device="My Delta 2"`. Series created by older versions have no labels;
+add them with `TS.ALTER <key> LABELS ...` if you need them.
+
+Sample timestamps are Unix **seconds** by default (as in earlier versions). RedisTimeSeries expects milliseconds, so
+`TS.GET` works, but `TS.RANGE` with real time ranges does not. Set `REDIS_TIMESTAMP_MS=true` to store milliseconds
+(new samples are always newer than the existing ones, so existing keys keep working).
+
 ## How to run the Redis, Exporter and Grafana using docker-compose
 
 1. Go to docker-compose folder: `cd docker-compose`
@@ -34,10 +42,17 @@ This can be useful when declaring variables in Grafana to fetch all devices you 
       parameters if you wish.
 
 3. (OPTIONALLY) Update other variables if you need to:
-    - `REDIS_URL` - Redis url. Default value: `localhost:6379`
+    - `REDIS_URL` - Redis address `host:port`, or a URL like `redis://user:password@redis:6379/0` (`rediss://` for
+      TLS). Default value: `localhost:6379`. `REDIS_USER`, `REDIS_PASSWORD` and `REDIS_DB` apply when the URL does
+      not specify them
     - `REDIS_DB` - Redis database. Default value: `0`
     - `REDIS_USER` - Redis username. Default value: no value
     - `REDIS_PASSWORD` - Redis password. Default value: no value
+    - `REDIS_RETENTION_DAYS` - keep samples of new time series for this many days. Existing series keep their
+      retention (change it with `TS.ALTER <key> RETENTION <ms>`). Not set: samples are kept forever
+    - `REDIS_MIN_WRITE_INTERVAL_SECONDS` - write at most one sample per device every N seconds, the latest state
+      within the interval wins. Not set: every update is written
+    - `REDIS_TIMESTAMP_MS` - store millisecond timestamps, see above. Default value: `false`
     - `METRIC_PREFIX`: the prefix that will be added to all metrics. Default value is `ecoflow`. For instance
       metric `bms_bmsStatus.minCellTemp` will be exported to prometheus as `ecoflow.bms_bmsStatus.minCellTemp`.
     - `SCRAPING_INTERVAL` - scrapping interval in seconds. How often should the exporter execute requests to Ecoflow
@@ -52,6 +67,12 @@ This can be useful when declaring variables in Grafana to fetch all devices you 
       in Grafana dashboard instead of a serial number.
       Example: `ECOFLOW_DEVICES_PRETTY_NAMES={"R33XXXXXXXXX":"My Delta 2", "R33YYYYY":"Delta Pro backup"}`
     - `DEBUG_ENABLED` - enable debug log messages. Default value is "false". To enable use values `true` or `1`
+    - `LOG_LEVEL` - `debug`, `info`, `warn` or `error`. Overrides `DEBUG_ENABLED`. `LOG_FORMAT=json` writes
+      structured logs instead of text
+    - `HANDLER_UNHEALTHY_AFTER_SECONDS` - report the exporter as unhealthy (`/healthz`, Docker health status) when an
+      output keeps failing for this many seconds. Disabled by default
+    - `ECOFLOW_SECRET_KEY_FILE`, `ECOFLOW_PASSWORD_FILE`, `TIMESCALE_URL_FILE`, `REDIS_PASSWORD_FILE` - read the value
+      from a file (Docker secrets). The plain variable wins when both are set
     - `GRAFANA_USERNAME` - admin username in Grafana. Default value: `grafana`. Can be changed later in Grafana UI
     - `GRAFANA_PASSWORD` - admin password in Grafana. Default value: `grafana`. Can be changed later in Grafana UI
 4. Save `.env` file with your changes.
